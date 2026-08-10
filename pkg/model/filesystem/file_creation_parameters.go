@@ -17,9 +17,7 @@ import (
 type FileCreationParameters struct {
 	*FileAccessParameters
 	referenceFormat                  object.ReferenceFormat
-	chunkMinimumSizeBytes            int
-	chunkHorizonSizeBytes            int
-	chunkGearTable                   *cdc.GearTable
+	contentDefinedChunker            cdc.ContentDefinedChunker
 	fileContentsListMinimumSizeBytes int
 	fileContentsListMaximumSizeBytes int
 }
@@ -63,11 +61,13 @@ func NewFileCreationParametersFromProto(m *model_filesystem_pb.FileCreationParam
 	}
 
 	return &FileCreationParameters{
-		FileAccessParameters:             accessParameters,
-		referenceFormat:                  referenceFormat,
-		chunkMinimumSizeBytes:            int(m.ChunkMinimumSizeBytes),
-		chunkHorizonSizeBytes:            int(m.ChunkHorizonSizeBytes),
-		chunkGearTable:                   cdc.NewSeededGearTable(m.ChunkGearTableSeed),
+		FileAccessParameters: accessParameters,
+		referenceFormat:      referenceFormat,
+		contentDefinedChunker: cdc.NewRepMaxContentDefinedChunker(
+			cdc.NewSeededGearTable(m.ChunkGearTableSeed),
+			int(m.ChunkMinimumSizeBytes),
+			int(m.ChunkHorizonSizeBytes),
+		),
 		fileContentsListMinimumSizeBytes: int(m.FileContentsListMinimumSizeBytes),
 		fileContentsListMaximumSizeBytes: int(m.FileContentsListMaximumSizeBytes),
 	}, nil
