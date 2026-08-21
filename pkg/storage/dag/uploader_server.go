@@ -346,7 +346,7 @@ func (r *dagReceiver[TLease]) processIncomingMessages() error {
 			// excessive height or size. Queueing these
 			// would be pointless, as getPendingObject()
 			// wouldn't be willing to dequeue them.
-			if !r.maximumUnfinalizedParentsLimit.CanAcquireObjectAndChildren(rootReference) {
+			if !r.maximumUnfinalizedParentsLimit.CanAcquireParentAndChildren(rootReference) {
 				return status.Error(codes.InvalidArgument, "Height or maximum total parents size of the object exceeds the limit that was established during handshaking")
 			}
 
@@ -551,7 +551,7 @@ func (r *dagReceiver[TLease]) getPendingObject() (*objectState[TLease], error) {
 			// stored at the top of the graph, preventing us
 			// from reading lower ones without exceeding
 			// memory limits.
-			if r.remainingUnfinalizedParentsLimit.AcquireObjectAndChildren(r.pendingObjects.Slice[0].reference) {
+			if r.remainingUnfinalizedParentsLimit.AcquireParentAndChildren(r.pendingObjects.Slice[0].reference) {
 				defer r.lock.Unlock()
 				return heap.Pop(&r.pendingObjects).(*objectState[TLease]), nil
 			}
@@ -694,7 +694,7 @@ func (r *dagReceiver[TLease]) finalizeObjectLocked(o *objectState[TLease], lease
 		}
 	}
 
-	r.remainingUnfinalizedParentsLimit.ReleaseObject(o.reference)
+	r.remainingUnfinalizedParentsLimit.ReleaseParent(o.reference)
 	r.pendingObjectsWakeup.Broadcast()
 }
 

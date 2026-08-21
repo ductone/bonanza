@@ -103,7 +103,7 @@ func (u *Uploader[TReference, TLease]) UploadObject(ctx context.Context, referen
 	}
 
 	// Enqueue the object for lease renewal.
-	if !u.maximumUnfinalizedParentsLimit.CanAcquireObjectAndChildren(localReference) {
+	if !u.maximumUnfinalizedParentsLimit.CanAcquireParentAndChildren(localReference) {
 		return nil, status.Error(codes.InvalidArgument, "Height or maximum total parents size of the object exceeds the configured limit")
 	}
 
@@ -135,7 +135,7 @@ func (u *Uploader[TReference, TLease]) getPendingObject(ctx context.Context) (*o
 	u.lock.Lock()
 	for {
 		if len(u.pendingObjects.Slice) > 0 {
-			if u.remainingUnfinalizedParentsLimit.AcquireObjectAndChildren(u.pendingObjects.Slice[0].reference.GetLocalReference()) {
+			if u.remainingUnfinalizedParentsLimit.AcquireParentAndChildren(u.pendingObjects.Slice[0].reference.GetLocalReference()) {
 				defer u.lock.Unlock()
 				return heap.Pop(&u.pendingObjects).(*objectState[TReference, TLease]), nil
 			}
@@ -251,7 +251,7 @@ func (u *Uploader[TReference, TLease]) finalizeObjectLocked(o *objectState[TRefe
 		}
 	}
 
-	u.remainingUnfinalizedParentsLimit.ReleaseObject(o.reference.GetLocalReference())
+	u.remainingUnfinalizedParentsLimit.ReleaseParent(o.reference.GetLocalReference())
 	u.pendingObjectsWakeup.Broadcast()
 }
 
