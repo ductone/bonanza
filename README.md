@@ -85,9 +85,87 @@ build a functioning copy of `protoc`), and that Starlark rules such as
 ones provided by bazel-gazelle, rules\_go, rules\_js, rules\_oci, and
 rules\_python tend to work as expected.
 
-Bonanza is currently unable to cache build results. This means that
-every invocation of `bonanza_bazel` behaves as if a clean build is
-performed. Work on addressing this limitation will start soon.
+Bonanza caches evaluation results. Because loading, analysis,
+configuration and action execution are all expressed as keys in the
+same Skyframe-like evaluation graph, one cache covers all of them: a
+repeated build resolves previously computed keys through the Tag Store
+instead of recomputing them. Cache entries are keyed on a semantics
+version that workers increment whenever evaluating identical keys with
+identical dependency values starts yielding different results, so a
+mixed-version fleet cannot serve entries across a rolling upgrade.
+Cached values that refer to objects which have since disappeared from
+storage are invalidated and recomputed rather than failing the build.
+Caching is not optional; `bonanza_builder` refuses to start without a
+tag signing key.
+
+This machinery is implemented and wired end to end, but it has not been
+measured at scale. `tools/e2e/run.sh` performs a cold build followed by
+a warm one and reports the elapsed time of each; it does not assert a
+hit rate.
+
+What Bonanza still cannot do is give you your build outputs.
+`bonanza_bazel build` verifies that a build succeeds and prints a link
+into `bonanza_browser`; `BuildResult.Value` carries no output set, and
+the client has no artifact materialization. The client implements
+`build`, `info`, `license` and `version`. There is no `test`, `run`,
+`query` or `cquery` command, and no Build Event Protocol.
+
+## Differences from upstream
+
+This fork tracks [buildbarn/bonanza](https://github.com/buildbarn/bonanza)
+and adds the following. All of it is loading- and analysis-phase work:
+none of it makes the client able to run a test, resolve a query or
+launch a binary, because those commands do not exist yet.
+
+**Aspects.** `aspect()` supports `attrs`, `toolchains`,
+`required_providers`, `required_aspect_providers`, `provides`,
+`attr_aspects`, `exec_groups` and `fragments`. Declared providers are
+enforced: an aspect that fails to return one errors out, and duplicate
+providers are rejected. Aspects are applied to configured targets
+through a first-class analysis key, and toolchains declared on an
+aspect become its default exec group, mirroring how rules behave.
+
+**Analysis-time testing.** `testing.analysis_test()`,
+`rule(analysis_test = True)`, `analysis_test_transition()` and
+`--allow_analysis_failures` work. Test rules receive the common test
+attributes (`size`, `timeout`, `flaky`, `local`, `shard_count`) and an
+implicit `"test"` exec group that inherits the default exec group's
+constraints. `test_suite()` builds the tests it references, but
+running them and expanding an empty `tests` attribute to every test in
+the package remain unimplemented.
+
+**Repository rule APIs.** `repository_ctx.getenv()`, `path.is_dir()`,
+`path.readdir()` and `path.realpath()` are implemented, the last of
+these resolving symbolic links inside the input root. File operations
+in repository rules follow symlinks, and more archive extensions are
+recognized when inferring an archive's format from its URL.
+
+**Starlark API coverage.** `target.actions` is exposed to rule and
+aspect implementations, reporting file types and mnemonics, and
+carrying the content written by `write()` and `expand_template()`.
+`native.existing_rule()` works inside module extensions. User-defined
+build settings can be set on the command line. Transitions can parse
+string values assigned to native options and can read non-configurable
+attribute values. `ctx.runfiles(skip_conflict_checking = ...)` is
+accepted. Two additions are deliberately partial:
+`ctx.actions.template_dict()` is emulated in the Starlark rule wrapper
+by computing substitutions at analysis time, since the native action
+encoding path still lacks it, and `config_feature_flag` always
+resolves to its default value because Bonanza does not model feature
+flag configuration.
+
+**Cache hardening.** Cache tag keys carry a semantics version, so
+workers implementing different evaluation semantics read and write
+disjoint keys instead of serving each other stale results. Cached
+evaluations that reference objects missing from storage are
+invalidated and recomputed rather than failing the build.
+
+**End-to-end smoke test.** `tools/e2e/run.sh` builds the demo
+deployment and the client, launches an isolated cluster, and drives
+`bonanza_bazel` against a test project that asserts analysis, remote
+action execution and artifact contents, along with aspect propagation
+and repository rule conformance. It is a local tool; CI does not run
+it.
 
 ## Running Bonanza
 
