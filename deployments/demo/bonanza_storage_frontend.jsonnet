@@ -18,8 +18,8 @@ local statePath = std.extVar('STATE_PATH');
   objectStoreConcurrency: 100,
   maximumUnfinalizedDagsCount: 100,
   maximumUnfinalizedParentsLimit: {
-    count: 1000,
-    sizeBytes: 16 * 1024 * 1024,
+    count: 1000000,
+    sizeBytes: 4 * 1024 * 1024 * 1024,
   },
 
   shardsReplicaA: {

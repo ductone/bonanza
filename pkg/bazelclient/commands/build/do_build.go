@@ -584,9 +584,14 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	dagUploader := dag_grpc.NewUploader(
 		dag_pb.NewUploaderClient(remoteCacheClient),
 		semaphore.NewWeighted(10),
+		// The effective limit is the minimum of this value and the
+		// server's (see dag.uploader_server), so a value too small here
+		// cannot be raised by reconfiguring the server. These bounds
+		// need to accommodate the whole workspace of the largest repo
+		// being built.
 		object.NewLimit(&object_pb.Limit{
-			Count:     1000,
-			SizeBytes: 1 << 20,
+			Count:     1000000,
+			SizeBytes: 1 << 30,
 		}),
 	)
 	if err := dagUploader.UploadDAG(
