@@ -85,8 +85,8 @@ github.com/buildbarn/bb-remote-execution v0.0.0-20260601183023-ca3fedba831b h1:U
 github.com/buildbarn/bb-remote-execution v0.0.0-20260601183023-ca3fedba831b/go.mod h1:oLE90/7Bvs2gh0GPvABwdO4d/Wl/8WNLP1W53jLnLIo=
 github.com/buildbarn/bb-storage v0.0.0-20260527152149-3991d6ebefb4 h1:blkT5HJJmHwndaOF4+vGDMq2yPyQWDZvcRwp69/y/YQ=
 github.com/buildbarn/bb-storage v0.0.0-20260527152149-3991d6ebefb4/go.mod h1:pdi21OopfzYOJA7bApR9+30VtZ/edYMAYNRlbb62uxw=
-github.com/buildbarn/go-cdc v0.0.9 h1:bWfgn92ed8Oo2zZKJdMAfB0APGz7Q8zvnqUn3hPuihM=
-github.com/buildbarn/go-cdc v0.0.9/go.mod h1:KUMqSMvoRlby3uak9aKIvgz3KgNqwm2CMUoVX1EDr8k=
+github.com/buildbarn/go-cdc v0.0.10 h1:/QMZuWZFPMP5jB3SX9QCKDjcpOJHMnEUv3AfViSIcXk=
+github.com/buildbarn/go-cdc v0.0.10/go.mod h1:vImAFzKmVqxoy9mKuh7wrD3bl3s2VDL5+0Ma6sLxRWA=
 github.com/buildbarn/go-sha256tree v0.0.0-20250310211320-0f70f20e855b h1:IKUxixGBm9UxobU7c248z0BF0ojG19uoSLz8MFZM/KA=
 github.com/buildbarn/go-sha256tree v0.0.0-20250310211320-0f70f20e855b/go.mod h1:e7g3/yWApcg+PpDqd4eQEEV8pexQmfCgK3frP+1Wuvk=
 github.com/buildbarn/go-xdr v0.0.0-20240702182809-236788cf9e89 h1:Wtpgk4CIkoEJ7Qx3BwjaMp3TOVv834heqyCC9jMKStM=
