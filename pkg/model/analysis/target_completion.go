@@ -6,14 +6,19 @@ import (
 
 	model_core "bonanza.build/pkg/model/core"
 	"bonanza.build/pkg/model/evaluation"
+	model_filesystem "bonanza.build/pkg/model/filesystem"
 	model_starlark "bonanza.build/pkg/model/starlark"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
 	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
-	"bonanza.build/pkg/storage/object"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 )
 
 func (c *baseComputer[TReference, TMetadata]) ComputeTargetCompletionValue(ctx context.Context, key model_core.Message[*model_analysis_pb.TargetCompletion_Key, TReference], e TargetCompletionEnvironment[TReference, TMetadata]) (PatchedTargetCompletionValue[TMetadata], error) {
 	// TODO: This should also respect --output_groups.
+	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
+	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	defaultInfo, err := getProviderFromConfiguredTarget(
 		e,
 		key.Message.Label,
@@ -22,6 +27,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetCompletionValue(ctx c
 	)
 	if err != nil {
 		return PatchedTargetCompletionValue[TMetadata]{}, err
+	}
+	if !gotDirectoryCreationParameters || !gotDirectoryReaders {
+		return PatchedTargetCompletionValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
 	files, err := model_starlark.GetStructFieldValue(ctx, c.valueReaders.List, defaultInfo, "files")
@@ -33,38 +41,49 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetCompletionValue(ctx c
 		return PatchedTargetCompletionValue[TMetadata]{}, errors.New("\"files\" field of DefaultInfo provider is not a depset")
 	}
 
-	var errIter error
-	missingDependencies := false
-	for element := range model_starlark.AllListLeafElementsSkippingDuplicateParents(
-		ctx,
-		c.valueReaders.List,
+	var rootDirectory changeTrackingDirectory[TReference, TMetadata]
+	if err := addFilesToChangeTrackingDirectory(
+		e,
 		model_core.Nested(files, filesDepset.Depset.Elements),
-		map[model_core.Decodable[object.LocalReference]]struct{}{},
-		&errIter,
-	) {
-		elementFile, ok := element.Message.Kind.(*model_starlark_pb.Value_File)
-		if !ok {
-			return PatchedTargetCompletionValue[TMetadata]{}, errors.New("\"files\" field of DefaultInfo provider contains an element that is not a File")
-		}
+		&rootDirectory,
+		&changeTrackingDirectoryLoadOptions[TReference]{
+			context:                 ctx,
+			directoryContentsReader: directoryReaders.DirectoryContents,
+			leavesReader:            directoryReaders.Leaves,
+		},
+		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+	); err != nil {
+		return PatchedTargetCompletionValue[TMetadata]{}, err
+	}
 
-		patchedFile := model_core.Patch(e, model_core.Nested(element, elementFile.File))
-		targetOutput := e.GetFileRootValue(
-			model_core.NewPatchedMessage(
-				&model_analysis_pb.FileRoot_Key{
-					File:            patchedFile.Message,
-					DirectoryLayout: model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+	group, groupCtx := errgroup.WithContext(ctx)
+	var createdRootDirectory model_filesystem.CreatedDirectory[TMetadata]
+	group.Go(func() error {
+		return model_filesystem.CreateDirectoryMerkleTree[TMetadata, TMetadata](
+			groupCtx,
+			semaphore.NewWeighted(1),
+			group,
+			directoryCreationParameters,
+			&capturableChangeTrackingDirectory[TReference, TMetadata]{
+				options: &capturableChangeTrackingDirectoryOptions[TReference, TMetadata]{
+					context:                 ctx,
+					directoryContentsReader: directoryReaders.DirectoryContents,
+					objectCapturer:          e,
 				},
-				patchedFile.Patcher,
-			),
+				directory: &rootDirectory,
+			},
+			model_filesystem.NewSimpleDirectoryMerkleTreeCapturer[TMetadata](e),
+			&createdRootDirectory,
 		)
-		if !targetOutput.IsSet() {
-			missingDependencies = true
-			continue
-		}
-	}
-	if missingDependencies {
-		return PatchedTargetCompletionValue[TMetadata]{}, evaluation.ErrMissingDependency
+	})
+	if err := group.Wait(); err != nil {
+		return PatchedTargetCompletionValue[TMetadata]{}, err
 	}
 
-	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.TargetCompletion_Value{}), nil
+	return model_core.NewPatchedMessage(
+		&model_analysis_pb.TargetCompletion_Value{
+			OutputRoot: createdRootDirectory.Message.Message,
+		},
+		createdRootDirectory.Message.Patcher,
+	), nil
 }

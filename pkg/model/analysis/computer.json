@@ -40,6 +40,8 @@
             "CompiledBzlFileDecodedGlobals",
             "CompiledBzlFileFunctionFactory",
             "CompiledBzlFileGlobal",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
             "RootModule",
             "Target",
             "TargetCompletion",
@@ -688,7 +690,10 @@
       },
       "TargetCompletion": {
          "dependsOn": [
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
             "FileRoot",
+            "FilesRoot",
             "TargetProvider"
          ],
          "keyContainsReferences": true

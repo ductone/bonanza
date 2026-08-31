@@ -289,6 +289,13 @@ genrule(
           "cat $(location :hello) $(location :repo_info) $(location :transitioned_mode) > $@",
 )
 
+# Source files reach the client's output tree too, which lets the
+# materialization of source files be exercised alongside output files.
+filegroup(
+    name = "sources",
+    srcs = ["action_edges_template.txt"],
+)
+
 filegroup(
     name = "all",
     srcs = [
@@ -304,6 +311,7 @@ filegroup(
         ":marked_labels",
         ":repo_info",
         ":self_transitioned",
+        ":sources",
         ":toolchain_probe",
         ":transitioned_mode",
         ":verify",

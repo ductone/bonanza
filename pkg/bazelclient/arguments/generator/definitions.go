@@ -215,9 +215,21 @@ var commands = map[string]command{
 				flagType:    buildSettingFlagType{},
 			},
 			{
+				longName:    "output_path",
+				description: "Directory into which the output files of the targets that were built are written. When left empty, outputs are written to a directory named \"bonanza-out\" inside the workspace.",
+				flagType:    stringFlagType{},
+			},
+			{
 				longName:    "platforms",
 				description: "The labels of the platform rules describing the target platforms for the current command.",
 				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "symlink_prefix",
+				description: "The prefix that is prepended to any of the convenience symbolic links that are created after a build. Setting it to \"/\" causes no symbolic links to be created.",
+				flagType: stringFlagType{
+					defaultValue: "bonanza-",
+				},
 			},
 		},
 		takesArguments: true,
