@@ -1,6 +1,6 @@
 module bonanza.build
 
-go 1.26.3
+go 1.26.5
 
 // rules_go doesn't support gomock's package mode.
 replace go.uber.org/mock => go.uber.org/mock v0.4.0
@@ -20,7 +20,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/buildbarn/bb-remote-execution v0.0.0-20260601183023-ca3fedba831b
 	github.com/buildbarn/bb-storage v0.0.0-20260527152149-3991d6ebefb4
-	github.com/buildbarn/go-cdc v0.0.9
+	github.com/buildbarn/go-cdc v0.0.10
 	github.com/ericlagergren/siv v0.0.0-20220507050439-0b757b3aa5f1
 	github.com/google/uuid v1.6.0
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51

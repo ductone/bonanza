@@ -15,7 +15,6 @@ import (
 
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/util"
-	cdc "github.com/buildbarn/go-cdc"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -63,17 +62,14 @@ func maybeWriteHole[T model_core.ReferenceMetadata](treeBuilder btree.Builder[*m
 // TODO: Change this function to support more efficient creation of
 // Merkle trees for sparse files.
 func CreateFileMerkleTree[T model_core.ReferenceMetadata](ctx context.Context, parameters *FileCreationParameters, f io.Reader, capturer FileMerkleTreeCapturer[T]) (model_core.PatchedMessage[*model_filesystem_pb.FileContents, T], error) {
-	chunker := cdc.NewRepMaxContentDefinedChunker(
+	chunkReader := parameters.contentDefinedChunker.NewChunkReader(
 		bufio.NewReaderSize(
 			f,
 			max(
 				parameters.referenceFormat.GetMaximumObjectSizeBytes(),
-				2*parameters.chunkMinimumSizeBytes+parameters.chunkHorizonSizeBytes,
+				parameters.contentDefinedChunker.GetMaximumPeekSizeBytes(),
 			),
 		),
-		parameters.chunkGearTable,
-		parameters.chunkMinimumSizeBytes,
-		parameters.chunkHorizonSizeBytes,
 	)
 	treeBuilder := btree.NewHeightAwareBuilder(
 		btree.NewProllyChunkerFactory[T](
@@ -129,7 +125,7 @@ func CreateFileMerkleTree[T model_core.ReferenceMetadata](ctx context.Context, p
 
 		// Read the next chunk of data from the file and create
 		// a chunk object out of it.
-		chunk, err := chunker.ReadNextChunk()
+		chunk, err := chunkReader.ReadNextChunk()
 		if err != nil {
 			if err == io.EOF {
 				// Emit the final lists of FileContents

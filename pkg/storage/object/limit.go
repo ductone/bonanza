@@ -48,21 +48,21 @@ func (l Limit) ToProto() *object.Limit {
 	}
 }
 
-// CanAcquireObjectAndChildren returns whether the current limits allow
+// CanAcquireParentAndChildren returns whether the current limits allow
 // processing the subgraph rooted at the referenced object.
-func (l *Limit) CanAcquireObjectAndChildren(reference LocalReference) bool {
+func (l *Limit) CanAcquireParentAndChildren(reference LocalReference) bool {
 	count := uint32(reference.GetHeight())
 	sizeBytes := uint64(reference.GetMaximumTotalParentsSizeBytes(true))
-	return count <= l.count && sizeBytes <= l.sizeBytes
+	return l.count >= count && l.sizeBytes >= sizeBytes
 }
 
-// AcquireObjectAndChildren reduces the limits, so that resources are
+// AcquireParentAndChildren reduces the limits, so that resources are
 // allocated for processing the subgraph rooted at the referenced
 // object.
-func (l *Limit) AcquireObjectAndChildren(reference LocalReference) bool {
+func (l *Limit) AcquireParentAndChildren(reference LocalReference) bool {
 	count := uint32(reference.GetHeight())
 	sizeBytes := uint64(reference.GetMaximumTotalParentsSizeBytes(true))
-	if count > l.count || sizeBytes > l.sizeBytes {
+	if l.count < count || l.sizeBytes < sizeBytes {
 		return false
 	}
 
@@ -71,10 +71,10 @@ func (l *Limit) AcquireObjectAndChildren(reference LocalReference) bool {
 	return true
 }
 
-// ReleaseObject increases the limits, so that resources are released
-// that were acquired for processing the referenced object (but not its
-// children).
-func (l *Limit) ReleaseObject(reference LocalReference) {
+// ReleaseParent increases the limits, so that resources are released
+// that were acquired for processing the referenced parent object (but
+// not its children).
+func (l *Limit) ReleaseParent(reference LocalReference) {
 	if reference.GetHeight() > 0 {
 		l.count++
 		l.sizeBytes += uint64(reference.GetSizeBytes())
@@ -83,7 +83,7 @@ func (l *Limit) ReleaseObject(reference LocalReference) {
 
 // ReleaseChildren increases the limits, so that resources are released
 // that were acquired for processing the children of the referenced
-// object.
+// parent object.
 func (l *Limit) ReleaseChildren(reference LocalReference) {
 	if h := reference.GetHeight(); h > 0 {
 		l.count += uint32(h - 1)
