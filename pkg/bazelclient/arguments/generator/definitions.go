@@ -181,13 +181,32 @@ var commonFlags = []flag{
 		flagType:    stringFlagType{},
 	},
 	{
+		longName:    "respect_gitignore",
+		description: "If true, files and directories that are ignored by Git (via .gitignore, .git/info/exclude, or the global excludes file) are excluded from the module source tree that gets uploaded to the remote cache, for any module whose root directory is itself the top level of a Git working tree. This has no effect on modules that aren't Git working trees, such as most vendored/extracted dependencies. Disable this if a module relies on a Git-ignored file also being a build input.",
+		flagType: boolFlagType{
+			defaultValue: true,
+		},
+	},
+	{
 		longName:    "rule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of rule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
 	},
 	{
+		longName:    "strict_module_resolution",
+		description: "If true, never silently fall back to the default Bazel Central Registry (https://bcr.bazel.build/) when --registry is unset. Instead, any module that isn't available through a local_path_override(), --override_module, or --vendor_dir fails the build with the name of the unresolved module. Intended for offline or fully vendored setups where an unexpected network fetch should be treated as a bug rather than silently succeeding.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
 		longName:    "subrule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of subrule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
+		flagType:    stringFlagType{},
+	},
+	{
+		longName:    "vendor_dir",
+		description: "Path to a directory containing one subdirectory per vendored module, such as the one produced by `bazel vendor --vendor_dir`. Every immediate subdirectory whose name parses as a module name is treated as though it had been passed via --override_module=<subdirectory name>=<path>, without needing to enumerate each one individually. Explicit --override_module or local_path_override() entries for the same module name take precedence.",
 		flagType:    stringFlagType{},
 	},
 	{

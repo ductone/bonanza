@@ -14,6 +14,7 @@ type Logger interface {
 	Error(message formatted.Node)
 	Fatal(message formatted.Node)
 	Info(message formatted.Node)
+	Warning(message formatted.Node)
 	RemovePreviousLines(int)
 }
 
