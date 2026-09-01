@@ -468,6 +468,17 @@
             "Repo"
          ]
       },
+      "QueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "CanonicalRepoName",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetDependencies",
+            "TargetPatternExpansion"
+         ]
+      },
       "RawActionResult": {
          "dependsOn": [
             "ActionEncoders",
@@ -717,6 +728,11 @@
             "TargetProvider"
          ],
          "keyContainsReferences": true
+      },
+      "TargetDependencies": {
+         "dependsOn": [
+            "Target"
+         ]
       },
       "TargetOutput": {
          "dependsOn": [
