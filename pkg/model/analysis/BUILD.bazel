@@ -67,6 +67,7 @@ go_library(
         "resolved_toolchains.go",
         "root_module.go",
         "rule_implementation_wrappers.go",
+        "run_target.go",
         "select.go",
         "semantics_version.go",
         "stable_input_root_path.go",

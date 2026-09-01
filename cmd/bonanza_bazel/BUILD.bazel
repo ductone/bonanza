@@ -8,9 +8,12 @@ go_library(
     deps = [
         "//pkg/bazelclient/arguments",
         "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/commands/clean",
+        "//pkg/bazelclient/commands/help",
         "//pkg/bazelclient/commands/info",
         "//pkg/bazelclient/commands/license",
         "//pkg/bazelclient/commands/test",
+        "//pkg/bazelclient/commands/run",
         "//pkg/bazelclient/commands/version",
         "//pkg/bazelclient/formatted",
         "//pkg/bazelclient/logging",
