@@ -10,7 +10,11 @@
 # artifact contents all at once. The build is run twice to demonstrate
 # that the second invocation is served from the evaluation cache.
 # Afterwards the artifacts that the client wrote to the local system are
-# inspected, covering the output materialization path as well.
+# inspected, covering the output materialization path as well, and the
+# project's test targets are run to cover "bonanza_bazel test": a test
+# that passes, one that fails (which must be reported as a result
+# rather than a build failure), and one that only passes when
+# --test_filter reaches the test binary.
 #
 # Usage:
 #   tools/e2e/run.sh
@@ -207,27 +211,50 @@ verify_output "external/testproject+/action_edges_template.txt" "name={NAME}"
   die "no bonanza-bin convenience symlink was created"
 log "artifacts were materialized below $OUT"
 
+# --- run the tests in the project ----------------------------------------
+log "running //:passing_test with bonanza_bazel"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=all //:passing_test) \
+  > "$RUN_DIR/test_pass.log" 2>&1 || {
+  cat "$RUN_DIR/test_pass.log" >&2
+  die "bonanza_bazel test of //:passing_test failed"
+}
+grep -q "passing_test ran" "$RUN_DIR/test_pass.log" ||
+  die "the log of //:passing_test was not printed by --test_output=all"
+grep -q "target=@@testproject+//:passing_test" "$RUN_DIR/test_pass.log" ||
+  die "//:passing_test did not observe TEST_TARGET"
+grep -q "PASSED" "$RUN_DIR/test_pass.log" ||
+  die "//:passing_test was not reported as passing"
+
+# A test that exits non-zero is a result, not a build failure: the
+# client reports it and exits with status 3, the way Bazel does.
+log "running //:failing_test with bonanza_bazel"
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=errors //:failing_test) \
+  > "$RUN_DIR/test_fail.log" 2>&1
+FAIL_STATUS=$?
+set -e
+cat "$RUN_DIR/test_fail.log" >&2
+[ "$FAIL_STATUS" -eq 3 ] ||
+  die "expected exit status 3 for a failing test, got $FAIL_STATUS"
+grep -q "FAILED (exit code 1)" "$RUN_DIR/test_fail.log" ||
+  die "//:failing_test was not reported as failing"
+grep -q "failing_test ran" "$RUN_DIR/test_fail.log" ||
+  die "the log of //:failing_test was not printed by --test_output=errors"
+
+# --test_filter is forwarded to the test binary as
+# TESTBRIDGE_TEST_ONLY. //:filtered_test only passes when it arrives.
+log "running //:filtered_test with bonanza_bazel --test_filter"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_filter=OnlyThis //:filtered_test) \
+  > "$RUN_DIR/test_filter.log" 2>&1 || {
+  cat "$RUN_DIR/test_filter.log" >&2
+  die "--test_filter did not reach the test binary"
+}
+log "tests ran and were reported correctly"
+
 log "building //:all with bonanza_bazel (warm; should be served from the evaluation cache)"
 t0=$(date +%s)
 build || die "warm bonanza_bazel build failed"
 t1=$(date +%s)
 log "warm build succeeded in $((t1 - t0))s"
-
-# --- run the tests -------------------------------------------------------
-# Both directions are checked. A "test" that builds its targets and skips
-# execution would pass the first assertion and fail the second, which is
-# the failure mode worth catching.
-test_target() {
-  (cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza "$1")
-}
-log "running //:passing_test with bonanza_bazel test"
-test_target //:passing_test || die "bonanza_bazel test of a passing test failed"
-log "passing test passed"
-
-log "running //:failing_test with bonanza_bazel test (expected to fail)"
-if test_target //:failing_test 2> "$RUN_DIR/failing_test_stderr.log"; then
-  die "bonanza_bazel test of a failing test unexpectedly succeeded"
-fi
-log "failing test failed, as expected"
 
 log "PASSED"

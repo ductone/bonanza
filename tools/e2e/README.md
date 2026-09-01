@@ -14,7 +14,11 @@ successful build proves that analysis, remote action execution (via the
 worker's virtual file system and bb_runner), and the resulting artifact
 contents are all correct. After the build, the script checks the output
 files that `bonanza_bazel` materialized below `bonanza-out/` in the test
-project, covering artifact output as well. Among other things it exercises
+project, covering artifact output as well. It then runs the project's
+test targets through `bonanza_bazel test`: one that passes, one that
+fails (which has to be reported as a result and yield exit status 3
+rather than a build failure), and one that only passes when
+`--test_filter` reaches the test binary as `TESTBRIDGE_TEST_ONLY`. Among other things it exercises
 `attr.int_list()`, `native.repo_name()`, `native.repository_name()`,
 `native.module_name()`, `native.module_version()`,
 `native.package_name()`, and `Label.workspace_name`. It also loads

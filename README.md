@@ -110,14 +110,16 @@ the client has no artifact materialization. The client implements
 `build`, `test`, `info`, `license` and `version`. There is no `run`,
 `query` or `cquery` command, and no Build Event Protocol.
 
-`test` builds the targets its patterns match and additionally executes
-whichever of them are declared by a test rule, failing the invocation
-when one exits non-zero. It reports no per-test output: there is no
-test.log, no test.xml, no summary, and `--test_output` is accepted but
-ignored, all of which need artifact materialization above. A test
-carrying `exec_compatible_with` is not yet honoured either -- the test
-action resolves its execution platform the way a target with an empty
-exec group does.
+`test` builds the targets its patterns match, runs whichever of them are
+declared by a test rule, and prints a per-target summary. A failing test
+is a result rather than a build failure: the client reports it and exits
+with status 3, the way Bazel does. `--test_output` controls whether the
+captured output of a test is printed, and `--test_filter` reaches the
+test binary as `TESTBRIDGE_TEST_ONLY`. There is no `test.xml`, no
+sharding, and no test caching across invocations beyond what the
+evaluation cache already gives. A test carrying `exec_compatible_with`
+is not yet honoured -- the test action resolves its execution platform
+the way a target with an empty exec group does.
 
 ## Differences from upstream
 
@@ -134,13 +136,18 @@ providers are rejected. Aspects are applied to configured targets
 through a first-class analysis key, and toolchains declared on an
 aspect become its default exec group, mirroring how rules behave.
 
-**Test execution.** `bonanza_bazel test` and the `TestResult` analysis
-function behind it. A test is run as an action synthesized from the
-target's `DefaultInfo.files_to_run` -- its executable, with a runfiles
-directory populated beside it -- rather than as an action declared on the
-configured target: `target.actions` is exposed to aspects, so an action
-that exists only because someone ran `test` would change what every
-aspect observes about the target.
+**Test execution.** `bonanza_bazel test`, backed by a `TestResult`
+analysis function that expands the target patterns and a
+`TargetTestResult` that runs one test. A test is run as an action
+synthesized from the target's `DefaultInfo.files_to_run` -- its
+executable, with a runfiles directory populated beside it -- rather than
+as an action declared on the configured target: `target.actions` is
+exposed to aspects, so an action that exists only because someone ran
+`test` would change what every aspect observes about the target.
+`CompletedActionResult` exists for the same reason a test is not a build
+failure: unlike `SuccessfulActionResult` it reports a non-zero exit as a
+value, so the client can print which tests failed instead of the
+evaluation stopping at the first one.
 
 **Analysis-time testing.** `testing.analysis_test()`,
 `rule(analysis_test = True)`, `analysis_test_transition()` and
