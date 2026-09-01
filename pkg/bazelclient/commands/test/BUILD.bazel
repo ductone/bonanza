@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "test",
+    srcs = ["do_tests.go"],
+    importpath = "bonanza.build/pkg/bazelclient/commands/test",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/bazelclient/arguments",
+        "//pkg/bazelclient/commands",
+        "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/model/core",
+        "//pkg/model/filesystem",
+        "//pkg/model/parser",
+        "//pkg/proto/model/analysis",
+        "//pkg/proto/model/command",
+        "//pkg/proto/model/core",
+        "//pkg/proto/model/filesystem",
+        "//pkg/storage/object",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_x_sync//semaphore",
+    ],
+)
