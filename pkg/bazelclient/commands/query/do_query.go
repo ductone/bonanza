@@ -1,0 +1,885 @@
+package query
+
+import (
+	"bytes"
+	"context"
+	"encoding"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"math"
+	"net/url"
+	"os"
+	"runtime"
+	"slices"
+	"strings"
+
+	"bonanza.build/pkg/bazelclient/arguments"
+	"bonanza.build/pkg/bazelclient/commands"
+	commands_build "bonanza.build/pkg/bazelclient/commands/build"
+	"bonanza.build/pkg/bazelclient/formatted"
+	"bonanza.build/pkg/bazelclient/logging"
+	"bonanza.build/pkg/crypto"
+	"bonanza.build/pkg/label"
+	model_core "bonanza.build/pkg/model/core"
+	"bonanza.build/pkg/model/core/btree"
+	model_encoding "bonanza.build/pkg/model/encoding"
+	model_evaluation "bonanza.build/pkg/model/evaluation"
+	model_executewithstorage "bonanza.build/pkg/model/executewithstorage"
+	model_filesystem "bonanza.build/pkg/model/filesystem"
+	model_parser "bonanza.build/pkg/model/parser"
+	encryptedaction_pb "bonanza.build/pkg/proto/encryptedaction"
+	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
+	model_core_pb "bonanza.build/pkg/proto/model/core"
+	model_encoding_pb "bonanza.build/pkg/proto/model/encoding"
+	model_evaluation_pb "bonanza.build/pkg/proto/model/evaluation"
+	model_executewithstorage_pb "bonanza.build/pkg/proto/model/executewithstorage"
+	model_filesystem_pb "bonanza.build/pkg/proto/model/filesystem"
+	remoteexecution_pb "bonanza.build/pkg/proto/remoteexecution"
+	dag_pb "bonanza.build/pkg/proto/storage/dag"
+	object_pb "bonanza.build/pkg/proto/storage/object"
+	"bonanza.build/pkg/remoteexecution"
+	pg_starlark "bonanza.build/pkg/starlark"
+	"bonanza.build/pkg/storage/dag"
+	dag_grpc "bonanza.build/pkg/storage/dag/grpc"
+	"bonanza.build/pkg/storage/object"
+	object_grpc "bonanza.build/pkg/storage/object/grpc"
+	object_namespacemapping "bonanza.build/pkg/storage/object/namespacemapping"
+
+	"github.com/buildbarn/bb-storage/pkg/eviction"
+	"github.com/buildbarn/bb-storage/pkg/filesystem"
+	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
+	"github.com/buildbarn/bb-storage/pkg/util"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/security/advancedtls"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/emptypb"
+)
+
+// newGRPCClient creates a gRPC client for one of the endpoints provided
+// on the command line (e.g., --remote_cache or --remote_executor).
+//
+// This is a copy of the identically named function in the "build"
+// command. It is small enough that duplicating it here is preferable
+// to exporting it from a package whose primary purpose is implementing
+// "bazel build".
+func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.ClientConn, error) {
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	var target string
+	var clientCredentials credentials.TransportCredentials
+	switch scheme := endpointURL.Scheme; scheme {
+	case "grpc":
+		target = endpointURL.Host
+		clientCredentials = insecure.NewCredentials()
+	case "grpcs":
+		target = endpointURL.Host
+		clientCredentials, err = advancedtls.NewClientCreds(&advancedtls.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create TLS client credentials: %w", err)
+		}
+	case "unix":
+		target = endpoint
+		clientCredentials = insecure.NewCredentials()
+	default:
+		return nil, errors.New("scheme is not supported")
+	}
+
+	return grpc.NewClient(target, grpc.WithTransportCredentials(clientCredentials))
+}
+
+type localCapturableDirectoryOptions[TFile model_core.ReferenceMetadata] struct {
+	fileParameters *model_filesystem.FileCreationParameters
+	capturer       model_filesystem.FileMerkleTreeCapturer[TFile]
+}
+
+type localCapturableDirectory[TDirectory, TFile model_core.ReferenceMetadata] struct {
+	filesystem.DirectoryCloser
+	options *localCapturableDirectoryOptions[TFile]
+}
+
+func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(name path.Component) (*model_filesystem.CreatedDirectory[TDirectory], model_filesystem.CapturableDirectory[TDirectory, TFile], error) {
+	child, err := d.DirectoryCloser.EnterDirectory(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, &localCapturableDirectory[TDirectory, TFile]{
+		DirectoryCloser: child,
+		options:         d.options,
+	}, nil
+}
+
+func (d *localCapturableDirectory[TDirectory, TFile]) OpenForFileMerkleTreeCreation(name path.Component) (model_filesystem.CapturableFile[TFile], error) {
+	f, err := d.OpenRead(name)
+	if err != nil {
+		return nil, err
+	}
+	return &localCapturableFile[TFile]{
+		file:    f,
+		options: d.options,
+	}, nil
+}
+
+type localCapturedDirectory struct {
+	filesystem.DirectoryCloser
+}
+
+func (d localCapturedDirectory) EnterCapturedDirectory(name path.Component) (model_filesystem.CapturedDirectory, error) {
+	child, err := d.DirectoryCloser.EnterDirectory(name)
+	if err != nil {
+		return nil, err
+	}
+	return localCapturedDirectory{
+		DirectoryCloser: child,
+	}, nil
+}
+
+type localCapturableFile[TFile model_core.ReferenceMetadata] struct {
+	file    filesystem.FileReader
+	options *localCapturableDirectoryOptions[TFile]
+}
+
+func (f *localCapturableFile[TFile]) CreateFileMerkleTree(ctx context.Context) (model_core.PatchedMessage[*model_filesystem_pb.FileContents, TFile], error) {
+	defer f.Discard()
+	return model_filesystem.CreateFileMerkleTree(
+		ctx,
+		f.options.fileParameters,
+		io.NewSectionReader(f.file, 0, math.MaxInt64),
+		f.options.capturer,
+	)
+}
+
+func (f *localCapturableFile[TFile]) Discard() {
+	f.file.Close()
+	f.file = nil
+}
+
+// canonicalTargetPatternRequest bundles a target pattern requested on
+// the command line together with the reference of the
+// TargetPatternExpansion_Key that is used to look up its result in the
+// outcomes returned by the evaluation.
+type canonicalTargetPatternRequest struct {
+	pattern      label.CanonicalTargetPattern
+	keyReference object.LocalReference
+}
+
+// DoQuery implements the "bazel query" command, which prints the
+// labels of targets matched by one or more target patterns.
+//
+// Unlike "bazel build", "bazel query" only requires the loading phase
+// (package parsing and target pattern expansion) to run, so this
+// command does not perform any configuration or analysis. It works by
+// submitting one TargetPatternExpansion_Key per target pattern
+// provided on the command line, and printing the labels contained in
+// the resulting values.
+func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
+	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
+	commands.ValidateInsideWorkspace(logger, "query", workspacePath)
+
+	if len(args.Arguments) == 0 {
+		logger.Fatal(formatted.Text("At least one target pattern must be provided"))
+	}
+	if args.QueryFlags.Output != arguments.QueryOutput_LabelKind && args.QueryFlags.Output != arguments.QueryOutput_Label {
+		logger.Fatal(formatted.Text("Invalid value for --output"))
+	}
+	if args.QueryFlags.Output == arguments.QueryOutput_LabelKind {
+		// TODO: Printing the rule kind requires an additional
+		// round trip to look up the Package_Value of every
+		// matched target, so that its Target.Definition can be
+		// inspected. This has not been implemented yet.
+		logger.Fatal(formatted.Text("--output=label_kind has not been implemented yet; only --output=label is currently supported"))
+	}
+
+	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache, &args.CommonFlags)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", args.CommonFlags.RemoteCache, err))
+	}
+
+	// Determine the names and paths of all modules that are present
+	// on the local system and need to be uploaded as part of the
+	// query. First look for local_path_override() directives in
+	// MODULE.bazel.
+	workspaceDirectory, err := filesystem.NewLocalDirectory(workspacePath)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to open workspace directory: %s", err))
+	}
+	moduleDotBazelFile, err := workspaceDirectory.OpenRead(path.MustNewComponent("MODULE.bazel"))
+	workspaceDirectory.Close()
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to open MODULE.bazel: %s", err))
+	}
+	moduleDotBazelContents, err := io.ReadAll(io.NewSectionReader(moduleDotBazelFile, 0, math.MaxInt64))
+	moduleDotBazelFile.Close()
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to read MODULE.bazel: %s", err))
+	}
+	modulePaths := map[label.Module]path.Parser{}
+	moduleDotBazelHandler := commands_build.NewLocalPathExtractingModuleDotBazelHandler(modulePaths, workspacePath)
+	if err := pg_starlark.ParseModuleDotBazel(
+		string(moduleDotBazelContents),
+		util.Must(label.NewCanonicalLabel("@@main+//:MODULE.bazel")),
+		path.LocalFormat,
+		moduleDotBazelHandler,
+	); err != nil {
+		logger.Fatal(formatted.Textf("Failed to parse MODULE.bazel: %s", err))
+	}
+	rootModuleName, err := moduleDotBazelHandler.GetRootModuleName()
+	if err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
+
+	// Augment results with modules provided to --override_module.
+	for _, overrideModule := range args.CommonFlags.OverrideModule {
+		fields := strings.SplitN(overrideModule, "=", 2)
+		if len(fields) != 2 {
+			logger.Fatal(formatted.Text("Module overrides must use the format ${module_name}=${path}"))
+		}
+		moduleName, err := label.NewModule(fields[0])
+		if err != nil {
+			logger.Fatal(formatted.Textf("Invalid module name %#v: %s", fields[0], err))
+		}
+		modulePaths[moduleName] = path.LocalFormat.NewParser(fields[1])
+	}
+
+	moduleNames := slices.Collect(maps.Keys(modulePaths))
+	slices.SortFunc(moduleNames, func(a, b label.Module) int {
+		return strings.Compare(a.String(), b.String())
+	})
+
+	// Determine parameters for creating file and directory Merkle
+	// trees. Parameters include minimum/maximum sizes of the
+	// resulting objects, and whether they are compressed and
+	// encrypted.
+	referenceFormat := util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1))
+	encryptionKeyBytes, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteEncryptionKey)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to base64 decode value of --remote_encryption_key: %s", err))
+	}
+	defaultEncoders := []*model_encoding_pb.BinaryEncoder{{
+		Encoder: &model_encoding_pb.BinaryEncoder_Encrypting{
+			Encrypting: &model_encoding_pb.EncryptingBinaryEncoder{
+				EncryptionKey: encryptionKeyBytes,
+			},
+		},
+	}}
+	var chunkEncoders []*model_encoding_pb.BinaryEncoder
+	if args.CommonFlags.RemoteCacheCompression {
+		chunkEncoders = append(chunkEncoders, &model_encoding_pb.BinaryEncoder{
+			Encoder: &model_encoding_pb.BinaryEncoder_LzwCompressing{
+				LzwCompressing: &emptypb.Empty{},
+			},
+		})
+	}
+	chunkEncoders = append(chunkEncoders, defaultEncoders...)
+
+	directoryParametersMessage := &model_filesystem_pb.DirectoryCreationParameters{
+		Access: &model_filesystem_pb.DirectoryAccessParameters{
+			Encoders: defaultEncoders,
+		},
+		DirectoryMaximumSizeBytes: 16 * 1024,
+	}
+	directoryParameters, err := model_filesystem.NewDirectoryCreationParametersFromProto(directoryParametersMessage, referenceFormat)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid directory creation parameters: %s", err))
+	}
+	fileParametersMessage := &model_filesystem_pb.FileCreationParameters{
+		Access: &model_filesystem_pb.FileAccessParameters{
+			ChunkEncoders:            chunkEncoders,
+			FileContentsListEncoders: defaultEncoders,
+		},
+		ChunkMinimumSizeBytes:            64 * 1024,
+		ChunkHorizonSizeBytes:            512 * 1024,
+		ChunkGearTableSeed:               encryptionKeyBytes,
+		FileContentsListMinimumSizeBytes: 4 * 1024,
+		FileContentsListMaximumSizeBytes: 16 * 1024,
+	}
+	fileParameters, err := model_filesystem.NewFileCreationParametersFromProto(fileParametersMessage, referenceFormat)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid file creation parameters: %s", err))
+	}
+
+	// Construct Merkle trees for all modules that need to be
+	// uploaded to storage.
+	logger.Info(formatted.Text("Scanning module sources"))
+	ctx := context.Background()
+	group, groupCtx := errgroup.WithContext(ctx)
+	moduleRootDirectories := make([]model_filesystem.CapturedDirectory, 0, len(moduleNames))
+	createdModuleRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(moduleNames))
+	createMerkleTreesConcurrency := semaphore.NewWeighted(int64(runtime.NumCPU()))
+	group.Go(func() error {
+		for i, moduleName := range moduleNames {
+			modulePath := modulePaths[moduleName]
+			moduleRootDirectory, err := filesystem.NewLocalDirectory(modulePath)
+			if err != nil {
+				return util.StatusWrapf(err, "Failed to open root directory of module %#v", moduleName.String())
+			}
+			moduleRootDirectories = append(moduleRootDirectories, localCapturedDirectory{
+				DirectoryCloser: moduleRootDirectory,
+			})
+			if err := model_filesystem.CreateDirectoryMerkleTree(
+				groupCtx,
+				createMerkleTreesConcurrency,
+				group,
+				directoryParameters,
+				&localCapturableDirectory[model_core.CreatedObjectTree, model_core.NoopReferenceMetadata]{
+					DirectoryCloser: moduleRootDirectory,
+					options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
+						fileParameters: fileParameters,
+						capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
+					},
+				},
+				model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
+				&createdModuleRootDirectories[i],
+			); err != nil {
+				return util.StatusWrapf(err, "Failed to create directory Merkle tree for module %#v", moduleName.String())
+			}
+		}
+		return nil
+	})
+	if err := group.Wait(); err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
+
+	fetcherPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorFetcherPkixPublicKey)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_fetcher_pkix_public_key: %s", err))
+	}
+
+	// TODO: Take the current working directory into account, so
+	// that any relative target patterns are resolved correctly.
+	currentPackage := rootModuleName.ToModuleInstance(nil).GetBareCanonicalRepo().GetRootPackage()
+
+	// Resolve every target pattern provided on the command line to
+	// a canonical target pattern. Patterns that are relative to the
+	// current package, or that are absolute within the root
+	// repository (e.g., "//foo:bar" or "//foo/...") can be resolved
+	// locally, as they are implicitly rooted at the root module's
+	// canonical repo.
+	//
+	// Patterns prefixed with an apparent repo name (e.g.,
+	// "@some_dep//foo:bar") cannot be resolved without consulting
+	// the module resolution graph (Bzlmod repo mappings), which is
+	// only available as part of evaluation. Supporting these is left
+	// as future work.
+	//
+	// A target pattern that already refers to a single canonical
+	// label (e.g., "//foo:bar", as opposed to a wildcard pattern
+	// like "//foo:all" or "//foo/...") does not need to be expanded
+	// at all: it matches itself. TargetPatternExpansion_Key does not
+	// accept such patterns (its computer only handles the
+	// single-package and recursive wildcard shapes), so these are
+	// collected separately and reported directly.
+	matchedLabels := map[string]struct{}{}
+	canonicalPatterns := make([]label.CanonicalTargetPattern, 0, len(args.Arguments))
+	for _, targetPattern := range args.Arguments {
+		apparentTargetPattern, err := currentPackage.AppendTargetPattern(targetPattern)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Invalid target pattern %#v: %s", targetPattern, err))
+		}
+		canonicalTargetPattern, ok := apparentTargetPattern.AsCanonical()
+		if !ok {
+			logger.Fatal(formatted.Textf("Target pattern %#v refers to a repository by its apparent name; \"bazel query\" currently only supports target patterns relative to the root repository (e.g., //foo:bar) or fully canonical target patterns (e.g., @@some_dep+//foo:bar)", targetPattern))
+		}
+		if singleLabel, ok := canonicalTargetPattern.AsCanonicalLabel(); ok {
+			matchedLabels[singleLabel.String()] = struct{}{}
+			continue
+		}
+		canonicalPatterns = append(canonicalPatterns, canonicalTargetPattern)
+	}
+
+	if len(canonicalPatterns) == 0 {
+		// Every target pattern provided on the command line
+		// already referred to a single canonical label, so there
+		// is nothing to expand. Avoid performing a remote
+		// evaluation altogether.
+		for _, l := range slices.Sorted(maps.Keys(matchedLabels)) {
+			fmt.Println(l)
+		}
+		return
+	}
+
+	// Construct a BuildSpecification message that lists all the
+	// modules and contains all of the flags needed to resolve
+	// packages.
+	buildSpecification := model_analysis_pb.BuildSpecification_Value{
+		RootModuleName:                         rootModuleName.String(),
+		DirectoryCreationParameters:            directoryParametersMessage,
+		FileCreationParameters:                 fileParametersMessage,
+		IgnoreRootModuleDevDependencies:        args.CommonFlags.IgnoreDevDependency,
+		BuiltinsModuleNames:                    args.CommonFlags.BuiltinsModule,
+		RepoPlatform:                           args.CommonFlags.RepoPlatform,
+		FetchPlatformPkixPublicKey:             fetcherPKIXPublicKey,
+		ActionEncoders:                         defaultEncoders,
+		RuleImplementationWrapperIdentifier:    args.CommonFlags.RuleImplementationWrapperIdentifier,
+		SubruleImplementationWrapperIdentifier: args.CommonFlags.SubruleImplementationWrapperIdentifier,
+	}
+	switch args.CommonFlags.LockfileMode {
+	case arguments.LockfileMode_Off:
+	case arguments.LockfileMode_Update:
+		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{}
+	case arguments.LockfileMode_Refresh:
+		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
+			Error: true,
+		}
+	case arguments.LockfileMode_Error:
+		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
+			MaximumCacheDuration: &durationpb.Duration{Seconds: 3600},
+		}
+	default:
+		panic("unknown lockfile mode")
+	}
+	if len(args.CommonFlags.Registry) > 0 {
+		buildSpecification.ModuleRegistryUrls = args.CommonFlags.Registry
+	} else {
+		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
+	}
+	buildSpecificationPatcher := model_core.NewReferenceMessagePatcher[dag.ObjectContentsWalker]()
+
+	for i, moduleName := range moduleNames {
+		createdRootDirectory := createdModuleRootDirectories[i]
+		if l := createdRootDirectory.MaximumSymlinkEscapementLevels; l == nil || l.Value != 0 {
+			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links that potentially escape the module's root directory", moduleName.String()))
+		}
+		createdObject, err := model_core.MarshalAndEncodeDeterministic(
+			model_core.ProtoToBinaryMarshaler(createdModuleRootDirectories[i].Message),
+			referenceFormat,
+			directoryParameters.GetEncoder(),
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to create root directory object for module %#v: %s", moduleName.String(), err))
+		}
+
+		createdObjectTree := model_core.CreatedObjectTree(createdObject.Value)
+		decodingParameters := createdObject.GetDecodingParameters()
+		buildSpecification.Modules = append(
+			buildSpecification.Modules,
+			&model_analysis_pb.BuildSpecification_Value_Module{
+				Name: moduleName.String(),
+				RootDirectoryReference: createdRootDirectory.ToDirectoryReference(
+					&model_core_pb.DecodableReference{
+						Reference: buildSpecificationPatcher.AddReference(
+							model_core.MetadataEntry[dag.ObjectContentsWalker]{
+								LocalReference: createdObject.Value.GetLocalReference(),
+								Metadata: model_filesystem.NewCapturedDirectoryWalker(
+									directoryParameters.DirectoryAccessParameters,
+									fileParameters,
+									moduleRootDirectories[i],
+									&createdObjectTree,
+									decodingParameters,
+								),
+							},
+						),
+						DecodingParameters: decodingParameters,
+					},
+				),
+			},
+		)
+	}
+
+	actionEncoder, err := model_encoding.NewDeterministicBinaryEncoderFromProto(
+		defaultEncoders,
+		uint32(referenceFormat.GetMaximumObjectSizeBytes()),
+	)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create action encoder: %s", err))
+	}
+
+	overrides, err := model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[dag.ObjectContentsWalker]) (encoding.BinaryMarshaler, error) {
+		buildSpecificationKey, err := model_core.MarshalTopLevelAny(
+			model_core.NewSimpleTopLevelMessage[object.LocalReference](
+				&model_analysis_pb.BuildSpecification_Key{},
+			),
+		)
+		if err != nil {
+			return nil, err
+		}
+		buildSpecificationKeyReference, err := model_core.ComputeTopLevelMessageReference(buildSpecificationKey, referenceFormat)
+		if err != nil {
+			return nil, err
+		}
+
+		buildSpecificationValue, err := model_core.MarshalAny(
+			model_core.NewPatchedMessage(&buildSpecification, buildSpecificationPatcher),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return model_core.NewProtoListBinaryMarshaler([]*model_evaluation_pb.Evaluations{{
+			Level: &model_evaluation_pb.Evaluations_Leaf_{
+				Leaf: &model_evaluation_pb.Evaluations_Leaf{
+					KeyReference: buildSpecificationKeyReference.GetRawReference(),
+					Graphlet: &model_evaluation_pb.Graphlet{
+						Evaluation: &model_evaluation_pb.Graphlet_EvaluationInline{
+							EvaluationInline: &model_evaluation_pb.Evaluation{
+								Value: buildSpecificationValue.Merge(patcher),
+							},
+						},
+					},
+				},
+			},
+		}}), nil
+	})
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create overrides list message: %s", err))
+	}
+	createdOverrides, err := model_core.MarshalAndEncodeDeterministic(overrides, referenceFormat, actionEncoder)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create overrides list object: %s", err))
+	}
+
+	// Compute the reference of the TargetPatternExpansion_Key
+	// belonging to each target pattern, so that the corresponding
+	// result can be looked up in the outcomes returned by the
+	// evaluation once it completes.
+	patternRequests := make([]canonicalTargetPatternRequest, 0, len(canonicalPatterns))
+	for _, canonicalPattern := range canonicalPatterns {
+		keyTopLevel := model_core.NewSimpleTopLevelMessage[object.LocalReference](
+			&model_analysis_pb.TargetPatternExpansion_Key{
+				TargetPattern: canonicalPattern.String(),
+				// "bazel query" includes targets tagged
+				// "manual", unlike "bazel build".
+				IncludeManualTargets: true,
+			},
+		)
+		keyAny, err := model_core.MarshalTopLevelAny(keyTopLevel)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to marshal target pattern expansion key for %#v: %s", canonicalPattern.String(), err))
+		}
+		keyReference, err := model_core.ComputeTopLevelMessageReference(keyAny, referenceFormat)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to compute target pattern expansion key reference for %#v: %s", canonicalPattern.String(), err))
+		}
+		patternRequests = append(patternRequests, canonicalTargetPatternRequest{
+			pattern:      canonicalPattern,
+			keyReference: keyReference,
+		})
+	}
+
+	// Construct an Action message that requests the evaluation of a
+	// TargetPatternExpansion_Key for every target pattern provided
+	// on the command line.
+	actionMessage, err := model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[dag.ObjectContentsWalker]) (encoding.BinaryMarshaler, error) {
+		overridesReference, err := patcher.CaptureAndAddDecodableReference(
+			ctx,
+			createdOverrides,
+			model_core.WalkableCreatedObjectCapturer,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		requestedKeys := make([]*model_evaluation_pb.Keys, 0, len(canonicalPatterns))
+		for _, canonicalPattern := range canonicalPatterns {
+			patchedKey := model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](
+				&model_analysis_pb.TargetPatternExpansion_Key{
+					TargetPattern:        canonicalPattern.String(),
+					IncludeManualTargets: true,
+				},
+			)
+			patchedKeyAny, err := model_core.MarshalAny(patchedKey)
+			if err != nil {
+				return nil, err
+			}
+			requestedKeys = append(requestedKeys, &model_evaluation_pb.Keys{
+				Level: &model_evaluation_pb.Keys_Leaf{
+					Leaf: patchedKeyAny.Merge(patcher),
+				},
+			})
+		}
+
+		return model_core.NewProtoBinaryMarshaler(&model_evaluation_pb.Action{
+			OverridesReference: overridesReference,
+			RequestedKeys:      requestedKeys,
+		}), nil
+	})
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create action message: %s", err))
+	}
+	createdAction, err := model_core.MarshalAndEncodeDeterministic(actionMessage, referenceFormat, actionEncoder)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create action object: %s", err))
+	}
+
+	logger.Info(formatted.Text("Uploading module sources"))
+	instanceName, err := object.NewInstanceName(args.CommonFlags.RemoteInstanceName)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid --remote_instance_name=%#v: %s", args.CommonFlags.RemoteInstanceName, err))
+	}
+	actionReference := createdAction.Value.GetLocalReference()
+	actionGlobalReference := instanceName.WithLocalReference(actionReference)
+	dagUploader := dag_grpc.NewUploader(
+		dag_pb.NewUploaderClient(remoteCacheClient),
+		semaphore.NewWeighted(10),
+		// The effective limit is the minimum of this value and the
+		// server's (see dag.uploader_server), so a value too small here
+		// cannot be raised by reconfiguring the server. These bounds
+		// need to accommodate the whole workspace of the largest repo
+		// being built.
+		object.NewLimit(&object_pb.Limit{
+			Count:     1000000,
+			SizeBytes: 1 << 30,
+		}),
+	)
+	if err := dagUploader.UploadDAG(
+		ctx,
+		actionGlobalReference,
+		dag.NewSimpleObjectContentsWalker(
+			createdAction.Value.Contents,
+			createdAction.Value.Metadata,
+		),
+	); err != nil {
+		logger.Fatal(formatted.Textf("Failed to upload workspace directory: %s", err))
+	}
+
+	clientPrivateKeyData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientPrivateKey)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+	}
+	clientPrivateKey, err := crypto.ParsePEMWithPKCS8ECDHPrivateKey(clientPrivateKeyData)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+	}
+
+	clientCertificateChainData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientCertificateChain)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+	}
+	clientCertificateChain, err := crypto.ParsePEMWithCertificateChain(clientCertificateChainData)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+	}
+
+	remoteExecutorClient, err := newGRPCClient(args.CommonFlags.RemoteExecutor, &args.CommonFlags)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", args.CommonFlags.RemoteExecutor, err))
+	}
+	builderClient := model_executewithstorage.NewNamespaceAddingClient(
+		model_executewithstorage.NewProtoClient(
+			remoteexecution.NewProtoClient[*model_executewithstorage_pb.Action, model_core_pb.WeakDecodableReference, model_core_pb.WeakDecodableReference](
+				remoteexecution.NewRemoteClient(
+					remoteexecution_pb.NewExecutionClient(remoteExecutorClient),
+					clientPrivateKey,
+					clientCertificateChain,
+				),
+			),
+		),
+		instanceName,
+	)
+
+	builderPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorBuilderPkixPublicKey)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_builder_pkix_public_key: %s", err))
+	}
+	builderECDHPublicKey, err := crypto.ParsePKIXECDHPublicKey(builderPKIXPublicKey)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_builder_pkix_public_key: %s", err))
+	}
+
+	parsedObjectPool := model_parser.NewParsedObjectPool(
+		eviction.NewLRUSet[model_parser.ParsedObjectEvictionKey](),
+		/* maximumCount = */ 1e3,
+		/* maximumSizeBytes = */ 1e5,
+	)
+	parsedObjectPoolIngester := model_parser.NewParsedObjectPoolIngester[object.LocalReference](
+		parsedObjectPool,
+		model_parser.NewDownloadingObjectReader(
+			object_namespacemapping.NewNamespaceAddingDownloader(
+				object_grpc.NewDownloader(object_pb.NewDownloaderClient(remoteCacheClient)),
+				instanceName,
+			),
+		),
+	)
+
+	logger.Info(formatted.Text("Performing query"))
+	var resultReference model_core.Decodable[object.LocalReference]
+	var errQuery error
+	evaluationActionObjectFormat := model_core.NewProtoObjectFormat(&model_evaluation_pb.Action{})
+	progressReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoObjectParser[object.LocalReference, model_evaluation_pb.Progress](),
+		),
+	)
+	progressLinesWritten := 0
+	for progressReference := range builderClient.RunAction(
+		context.Background(),
+		builderECDHPublicKey,
+		&model_executewithstorage.Action[object.LocalReference]{
+			Reference: model_core.CopyDecodable(
+				createdAction,
+				actionReference,
+			),
+			Encoders: defaultEncoders,
+			Format:   evaluationActionObjectFormat,
+		},
+		&encryptedaction_pb.Action_AdditionalData{
+			ExecutionTimeout: &durationpb.Duration{Seconds: 24 * 60 * 60},
+		},
+		&resultReference,
+		&errQuery,
+	) {
+		progress, err := progressReader.ReadObject(context.Background(), progressReference)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to read progress message: %s", err))
+		}
+		logger.RemovePreviousLines(progressLinesWritten)
+		logger.Info(formatted.Textf(
+			"🚧 %d   🚦 %d   🏁 %d   📤 %d   🌍 %d",
+			progress.Message.BlockedKeysCount,
+			progress.Message.EvaluatableKeysCount,
+			progress.Message.EvaluatedKeysCount,
+			progress.Message.UploadingKeysCount,
+			progress.Message.CompletedKeysCount,
+		))
+		progressLinesWritten = 1
+	}
+	if errQuery != nil {
+		logger.Fatal(formatted.Textf("Failed to perform query: %s", errQuery))
+	}
+	logger.RemovePreviousLines(progressLinesWritten)
+
+	resultReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoObjectParser[object.LocalReference, model_evaluation_pb.Result](),
+		),
+	)
+	result, err := resultReader.ReadObject(
+		context.Background(),
+		resultReference,
+	)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to read result message: %s", err))
+	}
+
+	if f := result.Message.Failure; f != nil {
+		logger.Fatal(formatted.Textf("Failed to perform query: %s", status.FromProto(f.Status)))
+	}
+	if result.Message.OutcomesReference == nil {
+		logger.Fatal(formatted.Text("Query did not yield any outcomes"))
+	}
+	outcomesReference, err := model_core.FlattenDecodableReference(model_core.Nested(result, result.Message.OutcomesReference))
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid outcomes reference: %s", err))
+	}
+
+	// Read the outcomes list produced by the evaluation, and look
+	// up the result of every requested TargetPatternExpansion_Key
+	// within it.
+	evaluationsReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoListObjectParser[object.LocalReference, model_evaluation_pb.Evaluations](),
+		),
+	)
+	evaluationReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoObjectParser[object.LocalReference, model_evaluation_pb.Evaluation](),
+		),
+	)
+	// Objects belonging to analysis values (as opposed to the
+	// top-level evaluation bookkeeping objects above) are currently
+	// stored without any additional encoding; see
+	// baseComputer.getValueObjectEncoder() in pkg/model/analysis.
+	targetLabelReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewProtoListObjectParser[object.LocalReference, model_analysis_pb.TargetPatternExpansion_Value_TargetLabel](),
+	)
+
+	evaluationsList, err := evaluationsReader.ReadObject(ctx, outcomesReference)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to read outcomes object: %s", err))
+	}
+
+	for _, request := range patternRequests {
+		evaluations, err := btree.Find(
+			ctx,
+			evaluationsReader,
+			evaluationsList,
+			func(entry model_core.Message[*model_evaluation_pb.Evaluations, object.LocalReference]) (int, *model_core_pb.DecodableReference) {
+				switch level := entry.Message.Level.(type) {
+				case *model_evaluation_pb.Evaluations_Leaf_:
+					return bytes.Compare(request.keyReference.GetRawReference(), level.Leaf.KeyReference), nil
+				case *model_evaluation_pb.Evaluations_Parent_:
+					return bytes.Compare(request.keyReference.GetRawReference(), level.Parent.FirstKeyReference), level.Parent.Reference
+				default:
+					return 0, nil
+				}
+			},
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to look up results for target pattern %#v: %s", request.pattern.String(), err))
+		}
+		if !evaluations.IsSet() {
+			logger.Fatal(formatted.Textf("No results were returned for target pattern %#v", request.pattern.String()))
+		}
+		evaluationsLeaf, ok := evaluations.Message.Level.(*model_evaluation_pb.Evaluations_Leaf_)
+		if !ok {
+			logger.Fatal(formatted.Textf("Outcomes list entry for target pattern %#v is not a valid leaf", request.pattern.String()))
+		}
+
+		graphlet := model_core.Nested(evaluations, evaluationsLeaf.Leaf.Graphlet)
+		evaluation, err := model_evaluation.GraphletGetEvaluation(ctx, evaluationReader, graphlet)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to obtain evaluation for target pattern %#v: %s", request.pattern.String(), err))
+		}
+		if evaluation.Message.Value == nil {
+			logger.Fatal(formatted.Textf("Target pattern %#v did not yield a value; evaluation may have failed", request.pattern.String()))
+		}
+
+		flattenedValue, err := model_core.FlattenAny(model_core.Nested(evaluation, evaluation.Message.Value))
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to flatten value for target pattern %#v: %s", request.pattern.String(), err))
+		}
+		unmarshaledValue, err := model_core.UnmarshalTopLevelAnyNew(flattenedValue)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to unmarshal value for target pattern %#v: %s", request.pattern.String(), err))
+		}
+		targetPatternExpansionValue, ok := unmarshaledValue.Message.(*model_analysis_pb.TargetPatternExpansion_Value)
+		if !ok {
+			logger.Fatal(formatted.Textf("Target pattern %#v yielded a value of an unexpected type", request.pattern.String()))
+		}
+
+		targetLabelsList := model_core.Nested(unmarshaledValue.Decay(), targetPatternExpansionValue.TargetLabels)
+		var iterErr error
+		for entry := range btree.AllLeaves(
+			ctx,
+			targetLabelReader,
+			targetLabelsList,
+			func(entry model_core.Message[*model_analysis_pb.TargetPatternExpansion_Value_TargetLabel, object.LocalReference]) (*model_core_pb.DecodableReference, error) {
+				return entry.Message.GetParent().GetReference(), nil
+			},
+			&iterErr,
+		) {
+			leaf, ok := entry.Message.Level.(*model_analysis_pb.TargetPatternExpansion_Value_TargetLabel_Leaf)
+			if !ok {
+				logger.Fatal(formatted.Textf("Target label entry for target pattern %#v is not a valid leaf", request.pattern.String()))
+			}
+			matchedLabels[leaf.Leaf] = struct{}{}
+		}
+		if iterErr != nil {
+			logger.Fatal(formatted.Textf("Failed to iterate results for target pattern %#v: %s", request.pattern.String(), iterErr))
+		}
+	}
+
+	for _, l := range slices.Sorted(maps.Keys(matchedLabels)) {
+		fmt.Println(l)
+	}
+}
