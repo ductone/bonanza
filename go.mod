@@ -17,6 +17,7 @@ replace cel.dev/expr => cel.dev/expr v0.25.1
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/bazelbuild/buildtools v0.0.0-20260528135316-84fa6c32aee6
+	github.com/bazelbuild/remote-apis v0.0.0-20260331222004-becdd8f9ff81
 	github.com/bluekeyes/go-gitdiff v0.8.1
 	github.com/buildbarn/bb-remote-execution v0.0.0-20260601183023-ca3fedba831b
 	github.com/buildbarn/bb-storage v0.0.0-20260527152149-3991d6ebefb4
@@ -33,6 +34,7 @@ require (
 	golang.org/x/lint v0.0.0-20241112194109-818c5a804067
 	golang.org/x/sync v0.20.0
 	golang.org/x/term v0.43.0
+	google.golang.org/genproto/googleapis/bytestream v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/grpc v1.82.1
 	google.golang.org/grpc/security/advancedtls v1.0.0
@@ -73,7 +75,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.3 // indirect
 	github.com/aws/smithy-go v1.26.0 // indirect
-	github.com/bazelbuild/remote-apis v0.0.0-20260331222004-becdd8f9ff81 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/buildbarn/go-sha256tree v0.0.0-20250310211320-0f70f20e855b // indirect
 	github.com/buildbarn/go-xdr v0.0.0-20240702182809-236788cf9e89 // indirect

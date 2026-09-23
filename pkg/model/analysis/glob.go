@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"bonanza.build/pkg/glob"
+	"bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
 	"bonanza.build/pkg/model/evaluation"
 	model_filesystem "bonanza.build/pkg/model/filesystem"
@@ -142,6 +143,8 @@ type globDirectoryWalker[TReference object.BasicReference, TMetadata model_core.
 	directoryReaders   *DirectoryReaders[TReference]
 	includeDirectories bool
 	matchedPaths       []string
+	basePackagePath    string
+	ignored            *ignoredDirectories
 }
 
 func (w *globDirectoryWalker[TReference, TMetadata]) walkDirectory(dStack util.NonEmptyStack[model_core.Message[*model_filesystem_pb.DirectoryContents, TReference]], dPath *path.Trace, dMatcher *glob.Matcher) error {
@@ -155,13 +158,20 @@ MatchDirectories:
 		if !ok {
 			return fmt.Errorf("invalid name for directory %#v in directory %#v", entry.Name, dPath.GetUNIXString())
 		}
+		childPath := dPath.Append(name)
+		repoRelativePath := childPath.GetUNIXString()
+		if w.basePackagePath != "" {
+			repoRelativePath = w.basePackagePath + "/" + repoRelativePath
+		}
+		if w.ignored.matches(repoRelativePath) {
+			continue MatchDirectories
+		}
 		childMatcher.CopyFrom(dMatcher)
 		for _, r := range name.String() {
 			if !childMatcher.WriteRune(r) {
 				continue MatchDirectories
 			}
 		}
-		childPath := dPath.Append(name)
 		if w.includeDirectories && childMatcher.IsMatch() {
 			w.matchedPaths = append(w.matchedPaths, childPath.GetUNIXString())
 		}
@@ -275,6 +285,20 @@ func (c *baseComputer[TReference, TMetadata]) ComputeGlobValue(ctx context.Conte
 	if !gotDirectoryReaders || !filesInPackageValue.IsSet() {
 		return PatchedGlobValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
+	canonicalPackage, err := label.NewCanonicalPackage(key.Package)
+	if err != nil {
+		return PatchedGlobValue[TMetadata]{}, fmt.Errorf("invalid glob package %q: %w", key.Package, err)
+	}
+	repoDefaults := e.GetRepoDefaultAttrsValue(&model_analysis_pb.RepoDefaultAttrs_Key{
+		CanonicalRepo: canonicalPackage.GetCanonicalRepo().String(),
+	})
+	if !repoDefaults.IsSet() {
+		return PatchedGlobValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	ignored, err := newIgnoredDirectories(repoDefaults.Message.IgnoredDirectories)
+	if err != nil {
+		return PatchedGlobValue[TMetadata]{}, fmt.Errorf("invalid REPO.bazel ignore_directories: %w", err)
+	}
 
 	nfa, err := glob.NewNFAFromBytes(key.Pattern)
 	if err != nil {
@@ -288,6 +312,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeGlobValue(ctx context.Conte
 		computer:           c,
 		directoryReaders:   directoryReaders,
 		includeDirectories: key.IncludeDirectories,
+		basePackagePath:    canonicalPackage.GetPackagePath(),
+		ignored:            ignored,
 	}
 	if err := w.walkDirectory(
 		util.NewNonEmptyStack(

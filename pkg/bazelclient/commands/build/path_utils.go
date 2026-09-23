@@ -35,6 +35,13 @@ func BaseName(absolutePathStr string) string {
 	return trimmed
 }
 
+// RelativeDepth reports how many path components separate descendantPathStr
+// from ancestorPathStr. The second result is false when the descendant is
+// outside the ancestor.
+func RelativeDepth(ancestorPathStr, descendantPathStr string) (int, bool) {
+	return relativeDepth(ancestorPathStr, descendantPathStr)
+}
+
 // relativeDepth reports how many path components separate descendantPathStr
 // from ancestorPathStr, assuming descendantPathStr lies at or below
 // ancestorPathStr. The second return value is false if descendantPathStr

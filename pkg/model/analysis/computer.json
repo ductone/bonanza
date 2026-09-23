@@ -331,7 +331,8 @@
       "Glob": {
          "dependsOn": [
             "DirectoryReaders",
-            "FilesInPackage"
+            "FilesInPackage",
+            "RepoDefaultAttrs"
          ]
       },
       "HTTPArchiveContents": {
@@ -354,6 +355,8 @@
       },
       "ModuleDotBazelContents": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileProperties",
             "HTTPFileContents",
             "ModuleFinalBuildList",
@@ -418,6 +421,8 @@
       },
       "ModuleRoughBuildList": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileReader",
             "HTTPFileContents",
             "ModuleDotBazelContents",
@@ -480,7 +485,8 @@
       "PackagesAtAndBelow": {
          "dependsOn": [
             "DirectoryReaders",
-            "Repo"
+            "Repo",
+            "RepoDefaultAttrs"
          ]
       },
       "QueryResult": {

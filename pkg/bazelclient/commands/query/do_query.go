@@ -246,6 +246,38 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Failed to resolve workspace path: %s", err))
 	}
 	workspaceBaseName := commands_build.BaseName(workspacePathStr)
+	if args.CommonFlags.StrictVendor && args.CommonFlags.VendorDir == "" {
+		logger.Fatal(formatted.Text("--strict_vendor requires --vendor_dir"))
+	}
+	strictVendorMode := args.CommonFlags.StrictVendor ||
+		(args.CommonFlags.VendorDir != "" && args.CommonFlags.StrictModuleResolution && len(args.CommonFlags.Registry) == 0)
+
+	registryURLs := append([]string(nil), args.CommonFlags.Registry...)
+	if len(registryURLs) == 0 && (args.CommonFlags.VendorDir != "" || !args.CommonFlags.StrictModuleResolution) {
+		registryURLs = []string{"https://bcr.bazel.build/"}
+	}
+	var vendorDirectory *commands_build.VendorDirectory
+	if args.CommonFlags.VendorDir != "" {
+		if args.CommonFlags.LockfileMode != arguments.LockfileMode_Error {
+			logger.Fatal(formatted.Text("--vendor_dir requires --lockfile_mode=error, because update and refresh semantics would require remote registry access"))
+		}
+		for index, registryURL := range registryURLs {
+			normalizedRegistryURL, err := commands_build.NormalizeVendorRegistryURL(registryURL)
+			if err != nil {
+				logger.Fatal(formatted.Textf("Invalid registry for --vendor_dir: %s", err))
+			}
+			registryURLs[index] = normalizedRegistryURL
+		}
+		vendorDirectory, err = commands_build.ScanVendorDirectory(
+			workspacePath,
+			args.CommonFlags.VendorDir,
+			registryURLs,
+			/* requireLockfile = */ true,
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Invalid --vendor_dir=%q: %s", args.CommonFlags.VendorDir, err))
+		}
+	}
 
 	// Augment results with modules provided to --override_module.
 	for _, overrideModule := range args.CommonFlags.OverrideModule {
@@ -281,6 +313,13 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 			},
 		},
 	}}
+
+	var vendoredRepos []commands_build.VendoredRepo
+	var vendoredRegistries []commands_build.VendoredRegistry
+	if vendorDirectory != nil {
+		vendoredRepos = vendorDirectory.Repos
+		vendoredRegistries = vendorDirectory.Registries
+	}
 	var chunkEncoders []*model_encoding_pb.BinaryEncoder
 	if args.CommonFlags.RemoteCacheCompression {
 		chunkEncoders = append(chunkEncoders, &model_encoding_pb.BinaryEncoder{
@@ -317,55 +356,158 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Invalid file creation parameters: %s", err))
 	}
 
-	// Construct Merkle trees for all modules that need to be
-	// uploaded to storage.
+	moduleDepths := make(map[label.Module]int, len(moduleNames))
+	for _, moduleName := range moduleNames {
+		modulePathStr, err := commands_build.ResolveToAbsoluteString(modulePaths[moduleName])
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to resolve path of module %#v: %s", moduleName.String(), err))
+		}
+		depth, withinWorkspace := commands_build.RelativeDepth(workspacePathStr, modulePathStr)
+		if !withinWorkspace {
+			depth = 0
+		}
+		moduleDepths[moduleName] = depth
+	}
+	vendoredRepoDepths := make([]int, len(vendoredRepos))
+	for i, vendoredRepo := range vendoredRepos {
+		depth, withinWorkspace := commands_build.RelativeDepth(workspacePathStr, vendoredRepo.RootPath)
+		if !withinWorkspace {
+			depth = 0
+		}
+		vendoredRepoDepths[i] = depth
+	}
+	vendoredRegistryDepths := make([]int, len(vendoredRegistries))
+	for i, vendoredRegistry := range vendoredRegistries {
+		depth, withinWorkspace := commands_build.RelativeDepth(workspacePathStr, vendoredRegistry.RootPath)
+		if !withinWorkspace {
+			depth = 0
+		}
+		vendoredRegistryDepths[i] = depth
+	}
+
 	logger.Info(formatted.Text("Scanning module sources"))
 	ctx := context.Background()
 	group, groupCtx := errgroup.WithContext(ctx)
-	moduleRootDirectories := make([]model_filesystem.CapturedDirectory, 0, len(moduleNames))
+	moduleRootDirectories := make([]model_filesystem.CapturedDirectory, len(moduleNames))
 	createdModuleRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(moduleNames))
+	vendoredRepoRootDirectories := make([]model_filesystem.CapturedDirectory, len(vendoredRepos))
+	createdVendoredRepoRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(vendoredRepos))
+	vendoredRegistryRootDirectories := make([]model_filesystem.CapturedDirectory, len(vendoredRegistries))
+	createdVendoredRegistryRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(vendoredRegistries))
 	createMerkleTreesConcurrency := semaphore.NewWeighted(int64(runtime.NumCPU()))
+	captureLocalSource := func(
+		sourceName string,
+		sourcePath path.Parser,
+		isRootModule bool,
+		excludedRootPath string,
+		respectGitignore bool,
+		requireGitignore bool,
+		capturedDirectory *model_filesystem.CapturedDirectory,
+		createdDirectory *model_filesystem.CreatedDirectory[model_core.CreatedObjectTree],
+	) error {
+		sourceDirectory, err := filesystem.NewLocalDirectory(sourcePath)
+		if err != nil {
+			return util.StatusWrapf(err, "Failed to open root directory of %s", sourceName)
+		}
+		sourcePathStr, err := commands_build.ResolveToAbsoluteString(sourcePath)
+		if err != nil {
+			sourceDirectory.Close()
+			return util.StatusWrapf(err, "Failed to resolve path of %s", sourceName)
+		}
+		exclusions, err := commands_build.NewSourceExclusions(
+			logger,
+			sourceDirectory,
+			sourceName,
+			sourcePathStr,
+			isRootModule,
+			workspaceBaseName,
+			respectGitignore,
+			requireGitignore,
+		)
+		if err != nil {
+			sourceDirectory.Close()
+			return err
+		}
+		if excludedRootPath != "" {
+			if err := exclusions.AddIgnoredRelativePath(excludedRootPath); err != nil {
+				sourceDirectory.Close()
+				return fmt.Errorf("exclude %q from %s source upload: %w", excludedRootPath, sourceName, err)
+			}
+		}
+		*capturedDirectory = localCapturedDirectory{
+			DirectoryCloser: sourceDirectory,
+		}
+		if err := model_filesystem.CreateDirectoryMerkleTree(
+			groupCtx,
+			createMerkleTreesConcurrency,
+			group,
+			directoryParameters,
+			&localCapturableDirectory[model_core.CreatedObjectTree, model_core.NoopReferenceMetadata]{
+				DirectoryCloser: sourceDirectory,
+				options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
+					fileParameters: fileParameters,
+					capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
+					exclusions:     exclusions,
+				},
+			},
+			model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
+			createdDirectory,
+		); err != nil {
+			return util.StatusWrapf(err, "Failed to create directory Merkle tree for %s", sourceName)
+		}
+		return nil
+	}
 	group.Go(func() error {
 		for i, moduleName := range moduleNames {
-			modulePath := modulePaths[moduleName]
-			moduleRootDirectory, err := filesystem.NewLocalDirectory(modulePath)
-			if err != nil {
-				return util.StatusWrapf(err, "Failed to open root directory of module %#v", moduleName.String())
+			excludedRootPath := ""
+			if moduleName == rootModuleName && vendorDirectory != nil {
+				modulePathStr, err := commands_build.ResolveToAbsoluteString(modulePaths[moduleName])
+				if err != nil {
+					return util.StatusWrapf(err, "Failed to resolve root module path")
+				}
+				if modulePathStr == workspacePathStr {
+					excludedRootPath = vendorDirectory.RootRelativePath
+				}
 			}
-			modulePathStr, err := commands_build.ResolveToAbsoluteString(modulePath)
-			if err != nil {
-				moduleRootDirectory.Close()
-				return util.StatusWrapf(err, "Failed to resolve module %#v path", moduleName.String())
-			}
-			exclusions, err := commands_build.NewSourceExclusions(
-				logger, moduleRootDirectory, moduleName.String(), modulePathStr,
-				moduleName == rootModuleName, workspaceBaseName,
-				args.CommonFlags.RespectGitignore, moduleName == rootModuleName && args.CommonFlags.RequireGitignore,
-			)
-			if err != nil {
-				moduleRootDirectory.Close()
-				return err
-			}
-			moduleRootDirectories = append(moduleRootDirectories, localCapturedDirectory{
-				DirectoryCloser: moduleRootDirectory,
-			})
-			if err := model_filesystem.CreateDirectoryMerkleTree(
-				groupCtx,
-				createMerkleTreesConcurrency,
-				group,
-				directoryParameters,
-				&localCapturableDirectory[model_core.CreatedObjectTree, model_core.NoopReferenceMetadata]{
-					DirectoryCloser: moduleRootDirectory,
-					options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
-						fileParameters: fileParameters,
-						capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
-						exclusions:     exclusions,
-					},
-				},
-				model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
+			if err := captureLocalSource(
+				fmt.Sprintf("module %#v", moduleName.String()),
+				modulePaths[moduleName],
+				moduleName == rootModuleName,
+				excludedRootPath,
+				args.CommonFlags.RespectGitignore,
+				moduleName == rootModuleName && args.CommonFlags.RequireGitignore,
+				&moduleRootDirectories[i],
 				&createdModuleRootDirectories[i],
 			); err != nil {
-				return util.StatusWrapf(err, "Failed to create directory Merkle tree for module %#v", moduleName.String())
+				return err
+			}
+		}
+		for i, vendoredRepo := range vendoredRepos {
+			if err := captureLocalSource(
+				fmt.Sprintf("vendored repository %q", "@@"+vendoredRepo.CanonicalRepo.String()),
+				path.LocalFormat.NewParser(vendoredRepo.RootPath),
+				/* isRootModule = */ false,
+				/* excludedRootPath = */ "",
+				/* respectGitignore = */ false,
+				/* requireGitignore = */ false,
+				&vendoredRepoRootDirectories[i],
+				&createdVendoredRepoRootDirectories[i],
+			); err != nil {
+				return err
+			}
+		}
+		for i, vendoredRegistry := range vendoredRegistries {
+			if err := captureLocalSource(
+				fmt.Sprintf("vendored registry %q", vendoredRegistry.URL),
+				path.LocalFormat.NewParser(vendoredRegistry.RootPath),
+				/* isRootModule = */ false,
+				/* excludedRootPath = */ "",
+				/* respectGitignore = */ false,
+				/* requireGitignore = */ false,
+				&vendoredRegistryRootDirectories[i],
+				&createdVendoredRegistryRootDirectories[i],
+			); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -426,6 +568,8 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		ActionEncoders:                         defaultEncoders,
 		RuleImplementationWrapperIdentifier:    args.CommonFlags.RuleImplementationWrapperIdentifier,
 		SubruleImplementationWrapperIdentifier: args.CommonFlags.SubruleImplementationWrapperIdentifier,
+		ModuleRegistryUrls:                     registryURLs,
+		StrictVendorMode:                       strictVendorMode,
 	}
 	switch args.CommonFlags.LockfileMode {
 	case arguments.LockfileMode_Off:
@@ -433,59 +577,119 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{}
 	case arguments.LockfileMode_Refresh:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
-			Error: true,
+			MaximumCacheDuration: &durationpb.Duration{Seconds: 3600},
 		}
 	case arguments.LockfileMode_Error:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
-			MaximumCacheDuration: &durationpb.Duration{Seconds: 3600},
+			Error: true,
 		}
 	default:
 		panic("unknown lockfile mode")
 	}
-	if len(args.CommonFlags.Registry) > 0 {
-		buildSpecification.ModuleRegistryUrls = args.CommonFlags.Registry
-	} else if !args.CommonFlags.StrictModuleResolution {
-		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
-	}
 	buildSpecificationPatcher := model_core.NewReferenceMessagePatcher[dag.ObjectContentsWalker]()
 
-	for i, moduleName := range moduleNames {
-		createdRootDirectory := createdModuleRootDirectories[i]
-		if l := createdRootDirectory.MaximumSymlinkEscapementLevels; l == nil || l.Value != 0 {
-			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links that potentially escape the module's root directory", moduleName.String()))
+	captureRootDirectory := func(
+		sourceName string,
+		createdRootDirectory model_filesystem.CreatedDirectory[model_core.CreatedObjectTree],
+		capturedRootDirectory model_filesystem.CapturedDirectory,
+		sourceDepth int,
+	) (*model_filesystem_pb.DirectoryReference, error) {
+		switch maximumEscapement := createdRootDirectory.MaximumSymlinkEscapementLevels; {
+		case maximumEscapement == nil:
+			return nil, fmt.Errorf("%s contains one or more symbolic links whose target cannot be bounded (e.g. an absolute path, or \"..\" following a named path component)", sourceName)
+		case maximumEscapement.Value > uint32(sourceDepth):
+			return nil, fmt.Errorf("%s contains one or more symbolic links that escape the workspace directory", sourceName)
+		case maximumEscapement.Value != 0:
+			logger.Warning(formatted.Textf("%s contains one or more symbolic links that escape its own root directory, but remain within the workspace", sourceName))
 		}
 		createdObject, err := model_core.MarshalAndEncodeDeterministic(
-			model_core.ProtoToBinaryMarshaler(createdModuleRootDirectories[i].Message),
+			model_core.ProtoToBinaryMarshaler(createdRootDirectory.Message),
 			referenceFormat,
 			directoryParameters.GetEncoder(),
 		)
 		if err != nil {
-			logger.Fatal(formatted.Textf("Failed to create root directory object for module %#v: %s", moduleName.String(), err))
+			return nil, err
 		}
-
 		createdObjectTree := model_core.CreatedObjectTree(createdObject.Value)
 		decodingParameters := createdObject.GetDecodingParameters()
+		return createdRootDirectory.ToDirectoryReference(
+			&model_core_pb.DecodableReference{
+				Reference: buildSpecificationPatcher.AddReference(
+					model_core.MetadataEntry[dag.ObjectContentsWalker]{
+						LocalReference: createdObject.Value.GetLocalReference(),
+						Metadata: model_filesystem.NewCapturedDirectoryWalker(
+							directoryParameters.DirectoryAccessParameters,
+							fileParameters,
+							capturedRootDirectory,
+							&createdObjectTree,
+							decodingParameters,
+						),
+					},
+				),
+				DecodingParameters: decodingParameters,
+			},
+		), nil
+	}
+
+	for i, moduleName := range moduleNames {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("module %#v", moduleName.String()),
+			createdModuleRootDirectories[i],
+			moduleRootDirectories[i],
+			moduleDepths[moduleName],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture root directory for module %#v: %s", moduleName.String(), err))
+		}
 		buildSpecification.Modules = append(
 			buildSpecification.Modules,
 			&model_analysis_pb.BuildSpecification_Value_Module{
-				Name: moduleName.String(),
-				RootDirectoryReference: createdRootDirectory.ToDirectoryReference(
-					&model_core_pb.DecodableReference{
-						Reference: buildSpecificationPatcher.AddReference(
-							model_core.MetadataEntry[dag.ObjectContentsWalker]{
-								LocalReference: createdObject.Value.GetLocalReference(),
-								Metadata: model_filesystem.NewCapturedDirectoryWalker(
-									directoryParameters.DirectoryAccessParameters,
-									fileParameters,
-									moduleRootDirectories[i],
-									&createdObjectTree,
-									decodingParameters,
-								),
-							},
-						),
-						DecodingParameters: decodingParameters,
-					},
-				),
+				Name:                   moduleName.String(),
+				RootDirectoryReference: rootDirectoryReference,
+			},
+		)
+	}
+	for i, vendoredRepo := range vendoredRepos {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("vendored repository %q", "@@"+vendoredRepo.CanonicalRepo.String()),
+			createdVendoredRepoRootDirectories[i],
+			vendoredRepoRootDirectories[i],
+			vendoredRepoDepths[i],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture vendored repository %q: %s", "@@"+vendoredRepo.CanonicalRepo.String(), err))
+		}
+		buildSpecification.VendoredRepos = append(
+			buildSpecification.VendoredRepos,
+			&model_analysis_pb.BuildSpecification_Value_VendoredRepo{
+				CanonicalRepo:          vendoredRepo.CanonicalRepo.String(),
+				RootDirectoryReference: rootDirectoryReference,
+			},
+		)
+	}
+	for i, vendoredRegistry := range vendoredRegistries {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("vendored registry %q", vendoredRegistry.URL),
+			createdVendoredRegistryRootDirectories[i],
+			vendoredRegistryRootDirectories[i],
+			vendoredRegistryDepths[i],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture vendored registry %q: %s", vendoredRegistry.URL, err))
+		}
+		files := make([]*model_analysis_pb.BuildSpecification_Value_VendoredRegistry_File, 0, len(vendoredRegistry.Files))
+		for _, file := range vendoredRegistry.Files {
+			files = append(files, &model_analysis_pb.BuildSpecification_Value_VendoredRegistry_File{
+				Path:   file.Path,
+				Sha256: file.SHA256,
+			})
+		}
+		buildSpecification.VendoredRegistries = append(
+			buildSpecification.VendoredRegistries,
+			&model_analysis_pb.BuildSpecification_Value_VendoredRegistry{
+				Url:                    vendoredRegistry.URL,
+				RootDirectoryReference: rootDirectoryReference,
+				Files:                  files,
 			},
 		)
 	}

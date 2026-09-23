@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strings"
 
 	"bonanza.build/pkg/ds"
 	"bonanza.build/pkg/label"
@@ -142,8 +143,10 @@ func (baseComputer[TReference, TMetadata]) ComputeModuleRoughBuildListValue(ctx 
 	rootModuleValue := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
 	modulesWithOverridesValue := e.GetModulesWithOverridesValue(&model_analysis_pb.ModulesWithOverrides_Key{})
 	registryURLsValue := e.GetModuleRegistryUrlsValue(&model_analysis_pb.ModuleRegistryUrls_Key{})
+	buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
+	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	fileReader, gotFileReader := e.GetFileReaderValue(&model_analysis_pb.FileReader_Key{})
-	if !rootModuleValue.IsSet() || !modulesWithOverridesValue.IsSet() || !registryURLsValue.IsSet() || !gotFileReader {
+	if !rootModuleValue.IsSet() || !modulesWithOverridesValue.IsSet() || !registryURLsValue.IsSet() || !buildSpecification.IsSet() || !gotDirectoryReaders || !gotFileReader {
 		return PatchedModuleRoughBuildListValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
@@ -197,6 +200,43 @@ ProcessModule:
 			}
 			moduleFileContents = model_core.Nested(moduleFileContentsValue, moduleFileContentsValue.Message.Contents)
 		} else {
+			// Prefer lockfile-verified registry metadata. Repositories absent
+			// from a partial Bazel vendor snapshot retain normal resolution.
+			relativeModulePath := strings.Join([]string{
+				"modules",
+				module.name.String(),
+				module.version.String(),
+				moduleDotBazelFilename,
+			}, "/")
+			for _, registryURL := range registryURLs {
+				registry, ok := findVendoredRegistry(buildSpecification.Message, registryURL)
+				if !ok {
+					if buildSpecification.Message.StrictVendorMode {
+						return PatchedModuleRoughBuildListValue[TMetadata]{}, fmt.Errorf("strict vendor mode has no registry mirror for %#v", registryURL)
+					}
+					continue
+				}
+				vendoredContents, verified, err := readVerifiedVendoredRegistryFile(ctx, buildSpecification, registry, directoryReaders, relativeModulePath)
+				if err != nil {
+					return PatchedModuleRoughBuildListValue[TMetadata]{}, fmt.Errorf("read vendored MODULE.bazel for module %s with version %s from registry %#v: %w", module.name, module.version, registryURL, err)
+				}
+				if !verified {
+					continue
+				}
+				if !vendoredContents.IsSet() {
+					return PatchedModuleRoughBuildListValue[TMetadata]{}, fmt.Errorf("vendored registry mirror for %#v is missing lockfile-verified module file %q", registryURL, relativeModulePath)
+				}
+				moduleFileContents = vendoredContents
+				buildListEntry = &model_analysis_pb.BuildListModule{
+					Name:        module.name.String(),
+					Version:     module.version.String(),
+					RegistryUrl: registryURL,
+				}
+				goto GotModuleFileContents
+			}
+			if buildSpecification.Message.StrictVendorMode {
+				return PatchedModuleRoughBuildListValue[TMetadata]{}, fmt.Errorf("module %s with version %s is absent from all lockfile-verified vendored registries", module.name, module.version)
+			}
 			// No override exists. Download the MODULE.bazel
 			// file from Bazel Central Registry (BCR). We
 			// don't want to download the full sources just

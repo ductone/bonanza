@@ -84,6 +84,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(
 				missingDependencies = true
 				continue
 			}
+			if visibleTarget.Message.Label == "" {
+				continue
+			}
 			defaultInfo, err := getProviderFromConfiguredTarget(e, visibleTarget.Message.Label, model_core.Patch(e, clonedReference), defaultInfoProviderIdentifier)
 			if err != nil {
 				if errors.Is(err, evaluation.ErrMissingDependency) {

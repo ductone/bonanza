@@ -118,6 +118,23 @@ func NewSourceExclusions(logger logging.Logger, moduleRoot filesystem.Directory,
 	return newSourceExclusions(bazelIgnorePaths, gitIgnorePaths, isRoot, workspaceBaseName), nil
 }
 
+// AddIgnoredRelativePath excludes one module-root-relative path from an eager
+// source upload. It rejects non-local spellings so a caller cannot turn a
+// source exclusion into a traversal outside the module tree.
+func (e *SourceExclusions) AddIgnoredRelativePath(relativePath string) error {
+	relativePath = strings.Trim(relativePath, "/")
+	if relativePath == "" {
+		return errors.New("path is empty")
+	}
+	for _, component := range strings.Split(relativePath, "/") {
+		if component == "" || component == "." || component == ".." {
+			return fmt.Errorf("path %q is not module-relative", relativePath)
+		}
+	}
+	e.ignoredRelativePaths[relativePath] = struct{}{}
+	return nil
+}
+
 // ShouldExclude reports whether a module-relative entry is excluded from upload.
 func (e *SourceExclusions) ShouldExclude(relativePath []string, entry filesystem.FileInfo) bool {
 	name := entry.Name().String()

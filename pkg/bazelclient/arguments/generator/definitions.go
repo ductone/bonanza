@@ -211,10 +211,23 @@ var commonFlags = []flag{
 		},
 	},
 	{
+		longName:    "strict_vendor",
+		description: "With --vendor_dir, reject any repository that is absent from the validated vendor snapshot instead of evaluating its normal repository rule.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
 		longName:    "subrule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of subrule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
 	},
+	{
+		longName:    "vendor_dir",
+		description: "Path to a Bazel vendor directory. Relative paths are resolved against the workspace root. Bonanza requires --lockfile_mode=error and validates marker files and MODULE.bazel.lock registry hashes. Repositories outside the snapshot use normal resolution unless --strict_vendor is set.",
+		flagType:    stringFlagType{},
+	},
+
 	{
 		longName:    "xcode_version",
 		description: "If specified, uses Xcode of the given version for relevant build actions. If unspecified, uses the executor default version of Xcode.",
