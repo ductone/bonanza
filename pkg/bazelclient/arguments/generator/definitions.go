@@ -30,6 +30,10 @@ var enumTypes = map[string][]string{
 		"refresh",
 		"error",
 	},
+	"QueryOutput": {
+		"label",
+		"label_kind",
+	},
 	"TestOutput": {
 		"summary",
 		"errors",
@@ -282,6 +286,20 @@ var commands = map[string]command{
 	},
 	"license": {
 		ancestor: "common",
+	},
+	"query": {
+		ancestor: "common",
+		flags: []flag{
+			{
+				longName:    "output",
+				description: "The format in which the query results should be printed. Supported values are 'label' (print the label of each matched target) and 'label_kind' (print the rule kind together with the label, following Bazel's own \"kind rule label\" convention).",
+				flagType: enumFlagType{
+					enumType:     "QueryOutput",
+					defaultValue: "label",
+				},
+			},
+		},
+		takesArguments: true,
 	},
 	"run": {
 		ancestor: "build",

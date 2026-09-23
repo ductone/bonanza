@@ -2163,6 +2163,118 @@ message TargetTestResult {
 // the counterpart of BuildResult for "bonanza_bazel test": clients
 // request both keys, so that every matched target is built and the ones
 // that are tests are also run.
+// QueryExpression is a parsed "bazel query" expression. The client
+// parses the query language and sends the tree, so that evaluation
+// happens in the cluster: an rdeps() over a large universe visits every
+// target in it, which is not a walk a client can drive over the network.
+message QueryExpression {
+  message Set {
+    // Apparent target patterns, as written inside set().
+    repeated string patterns = 1;
+  }
+
+  message Binary {
+    enum Operator {
+      UNION = 0;
+      EXCEPT = 1;
+      INTERSECT = 2;
+    }
+
+    Operator operator = 1;
+    QueryExpression left = 2;
+    QueryExpression right = 3;
+  }
+
+  message Deps {
+    QueryExpression universe = 1;
+
+    // Maximum number of edges to traverse. Negative means unbounded.
+    int32 depth = 2;
+  }
+
+  message Rdeps {
+    QueryExpression universe = 1;
+    QueryExpression targets = 2;
+
+    // Maximum number of edges to traverse. Negative means unbounded.
+    int32 depth = 3;
+  }
+
+  // Unanchored regular expression matched against each target's kind,
+  // such as "go_library rule" or "source file".
+  message Kind {
+    string pattern = 1;
+    QueryExpression targets = 2;
+  }
+
+  // Unanchored regular expression matched against each target's label.
+  message Filter {
+    string pattern = 1;
+    QueryExpression targets = 2;
+  }
+
+  // Unanchored regular expression matched against the value of the
+  // named attribute.
+  message Attr {
+    string name = 1;
+    string pattern = 2;
+    QueryExpression targets = 3;
+  }
+
+  oneof expression {
+    // A bare apparent target pattern.
+    string pattern = 1;
+    Set set = 2;
+    Binary binary = 3;
+    Deps deps = 4;
+    Rdeps rdeps = 5;
+    Kind kind = 6;
+    Filter filter = 7;
+    Attr attr = 8;
+  }
+}
+
+message QueryResult {
+  message Key {
+    QueryExpression expression = 1;
+  }
+
+  message Value {
+    message Target {
+      // The canonical label of the matched target.
+      string label = 1;
+
+      // The kind of the target, in the form "bazel query
+      // --output=label_kind" prints it: "go_library rule", "source
+      // file", "alias rule".
+      string kind = 2;
+    }
+
+    // Matched targets, sorted by label.
+    repeated Target targets = 1;
+  }
+}
+
+message TargetDependencies {
+  message Key {
+    // The label of the target whose dependencies need to be computed.
+    // The label MUST include a canonical repo name.
+    string label = 1;
+  }
+
+  message Value {
+    // Canonical labels of the targets that this target refers to
+    // through its label-typed attributes, sorted and deduplicated.
+    //
+    // EVERY branch of a select() contributes, including its default.
+    // That is what "bazel query" reports, and it is forced rather than
+    // chosen: the loading phase has no configuration with which to
+    // decide which branch applies. A caller that needs the dependencies
+    // of one configuration wants cquery, not this.
+    repeated string labels = 1;
+  }
+}
+
 message TestResult {
   message Key {
     // Configurations for which tests should be run.
