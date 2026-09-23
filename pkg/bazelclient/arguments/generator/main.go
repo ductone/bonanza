@@ -215,10 +215,26 @@ func main() {
 	fmt.Printf("          longOptionName = longOptionName[:assignmentIndex]\n")
 	fmt.Printf("        }\n")
 	fmt.Printf("        switch longOptionName {\n")
+	// One case per flag NAME, not per (command, flag) pair: the switch
+	// below is shared by every command, so a name defined by more than
+	// one command -- "--output", on both query and cquery -- must emit
+	// once and test each flag set in turn.
+	longNameFlagSets := map[string][]string{}
+	longNameFlags := map[string]flag{}
 	for _, flagsName := range slices.Sorted(maps.Keys(commandFlags)) {
-		for _, flag := range commandFlags[flagsName] {
-			flag.flagType.emitLongNameParser(flagsName, flag.longName)
+		for _, f := range commandFlags[flagsName] {
+			if existing, ok := longNameFlags[f.longName]; ok {
+				if fmt.Sprintf("%T", existing.flagType) != fmt.Sprintf("%T", f.flagType) {
+					panic(fmt.Sprintf("flag %#v is declared with differing types by more than one command", f.longName))
+				}
+			} else {
+				longNameFlags[f.longName] = f
+			}
+			longNameFlagSets[f.longName] = append(longNameFlagSets[f.longName], flagsName)
 		}
+	}
+	for _, longName := range slices.Sorted(maps.Keys(longNameFlags)) {
+		longNameFlags[longName].flagType.emitLongNameParser(longNameFlagSets[longName], longName)
 	}
 	fmt.Printf("        case \"--config\":\n")
 	fmt.Printf("          if assignmentIndex < 0 {\n")

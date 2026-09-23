@@ -103,12 +103,34 @@ measured at scale. `tools/e2e/run.sh` performs a cold build followed by
 a warm one and reports the elapsed time of each; it does not assert a
 hit rate.
 
-What Bonanza still cannot do is give you your build outputs.
-`bonanza_bazel build` verifies that a build succeeds and prints a link
-into `bonanza_browser`; `BuildResult.Value` carries no output set, and
-the client has no artifact materialization. The client implements
-`build`, `test`, `info`, `license` and `version`. There is no `run`,
-`query` or `cquery` command, and no Build Event Protocol.
+The client implements `build`, `test`, `run`, `query`, `cquery`, `info`,
+`license` and `version`. A build materializes its output files locally,
+under `bazel-out/` with the usual convenience symlinks. There is no
+Build Event Protocol.
+
+`query` and `cquery` share one expression language and differ only in
+the edges they walk. Implemented: target patterns, `set()`, the
+`union`/`except`/`intersect` operators, `deps()`, `rdeps()`, `kind()`,
+`filter()`, `attr()`, and `--output=label` and `--output=label_kind`.
+The rest of the language (`somepath`, `tests`, `labels`, `buildfiles`,
+`siblings`) and the other output formats (`build`, `proto`, `xml`,
+`graph`) are not implemented; an unimplemented function is rejected by
+name rather than being taken for a target pattern, so it cannot masquerade
+as an empty result.
+
+The client parses the expression; the cluster evaluates it. An `rdeps()`
+visits every target in its universe, which is not a walk a client can
+drive over the network, so the parsed tree is sent as a
+`QueryExpression` and one query costs one round trip.
+
+`query` walks the loading-phase graph, where a `select()` contributes
+every branch because there is no configuration to choose with. `cquery`
+walks one configuration's graph, where the `select()` has been resolved
+and an alias reports what it expands to; it takes `--platforms` and
+build setting overrides the same way a build does, and prints the
+configuration after each label. `cquery` does not follow configuration
+transitions: a target reached through a transitioning attribute is
+reported in its parent's configuration.
 
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test

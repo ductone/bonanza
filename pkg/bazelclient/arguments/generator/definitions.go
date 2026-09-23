@@ -287,6 +287,20 @@ var commands = map[string]command{
 	"license": {
 		ancestor: "common",
 	},
+	"cquery": {
+		ancestor: "build",
+		flags: []flag{
+			{
+				longName:    "output",
+				description: "The format in which the query results should be printed. Supported values are 'label' (print the label of each matched target) and 'label_kind' (print the rule kind together with the label).",
+				flagType: enumFlagType{
+					enumType:     "QueryOutput",
+					defaultValue: "label",
+				},
+			},
+		},
+		takesArguments: true,
+	},
 	"query": {
 		ancestor: "common",
 		flags: []flag{

@@ -51,7 +51,9 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/eviction"
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
+
 	"github.com/buildbarn/bb-storage/pkg/util"
+	"google.golang.org/protobuf/proto"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -174,20 +176,17 @@ func (f *localCapturableFile[TFile]) Discard() {
 // submitting one TargetPatternExpansion_Key per target pattern
 // provided on the command line, and printing the labels contained in
 // the resulting values.
-func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
-	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
-	commands.ValidateInsideWorkspace(logger, "query", workspacePath)
+// runQuery uploads the workspace, asks the cluster to evaluate one key,
+// and returns its value.
+//
+// query and cquery differ only in the key they request and how they
+// print the result, so everything between those two points is shared.
+func runQuery(logger logging.Logger, commandName string, commonFlags *arguments.CommonFlags, workspacePath path.Parser, queryKey proto.Message) proto.Message {
+	commands.ValidateInsideWorkspace(logger, commandName, workspacePath)
 
-	if len(args.Arguments) == 0 {
-		logger.Fatal(formatted.Text("A query expression must be provided"))
-	}
-	if args.QueryFlags.Output != arguments.QueryOutput_LabelKind && args.QueryFlags.Output != arguments.QueryOutput_Label {
-		logger.Fatal(formatted.Text("Invalid value for --output"))
-	}
-
-	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache, &args.CommonFlags)
+	remoteCacheClient, err := newGRPCClient(commonFlags.RemoteCache, commonFlags)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", args.CommonFlags.RemoteCache, err))
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", commonFlags.RemoteCache, err))
 	}
 
 	// Determine the names and paths of all modules that are present
@@ -224,7 +223,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	}
 
 	// Augment results with modules provided to --override_module.
-	for _, overrideModule := range args.CommonFlags.OverrideModule {
+	for _, overrideModule := range commonFlags.OverrideModule {
 		fields := strings.SplitN(overrideModule, "=", 2)
 		if len(fields) != 2 {
 			logger.Fatal(formatted.Text("Module overrides must use the format ${module_name}=${path}"))
@@ -246,7 +245,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	// resulting objects, and whether they are compressed and
 	// encrypted.
 	referenceFormat := util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1))
-	encryptionKeyBytes, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteEncryptionKey)
+	encryptionKeyBytes, err := base64.StdEncoding.DecodeString(commonFlags.RemoteEncryptionKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode value of --remote_encryption_key: %s", err))
 	}
@@ -258,7 +257,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		},
 	}}
 	var chunkEncoders []*model_encoding_pb.BinaryEncoder
-	if args.CommonFlags.RemoteCacheCompression {
+	if commonFlags.RemoteCacheCompression {
 		chunkEncoders = append(chunkEncoders, &model_encoding_pb.BinaryEncoder{
 			Encoder: &model_encoding_pb.BinaryEncoder_LzwCompressing{
 				LzwCompressing: &emptypb.Empty{},
@@ -335,7 +334,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
-	fetcherPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorFetcherPkixPublicKey)
+	fetcherPKIXPublicKey, err := base64.StdEncoding.DecodeString(commonFlags.RemoteExecutorFetcherPkixPublicKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_fetcher_pkix_public_key: %s", err))
 	}
@@ -360,19 +359,6 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	// accept such patterns (its computer only handles the
 	// single-package and recursive wildcard shapes), so these are
 	// collected separately and reported directly.
-	// Parse the query expression. The client owns the language and
-	// the cluster owns the walk, so target patterns cross the boundary
-	// unresolved: canonicalizing an apparent pattern needs the repo
-	// mapping, which only the cluster has.
-	parsedExpression, err := ParseExpression(args.Arguments)
-	if err != nil {
-		logger.Fatal(formatted.Textf("Invalid query expression: %s", err))
-	}
-	queryExpression, err := Encode(parsedExpression)
-	if err != nil {
-		logger.Fatal(formatted.Textf("Invalid query expression: %s", err))
-	}
-
 	// Construct a BuildSpecification message that lists all the
 	// modules and contains all of the flags needed to resolve
 	// packages.
@@ -380,15 +366,15 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		RootModuleName:                         rootModuleName.String(),
 		DirectoryCreationParameters:            directoryParametersMessage,
 		FileCreationParameters:                 fileParametersMessage,
-		IgnoreRootModuleDevDependencies:        args.CommonFlags.IgnoreDevDependency,
-		BuiltinsModuleNames:                    args.CommonFlags.BuiltinsModule,
-		RepoPlatform:                           args.CommonFlags.RepoPlatform,
+		IgnoreRootModuleDevDependencies:        commonFlags.IgnoreDevDependency,
+		BuiltinsModuleNames:                    commonFlags.BuiltinsModule,
+		RepoPlatform:                           commonFlags.RepoPlatform,
 		FetchPlatformPkixPublicKey:             fetcherPKIXPublicKey,
 		ActionEncoders:                         defaultEncoders,
-		RuleImplementationWrapperIdentifier:    args.CommonFlags.RuleImplementationWrapperIdentifier,
-		SubruleImplementationWrapperIdentifier: args.CommonFlags.SubruleImplementationWrapperIdentifier,
+		RuleImplementationWrapperIdentifier:    commonFlags.RuleImplementationWrapperIdentifier,
+		SubruleImplementationWrapperIdentifier: commonFlags.SubruleImplementationWrapperIdentifier,
 	}
-	switch args.CommonFlags.LockfileMode {
+	switch commonFlags.LockfileMode {
 	case arguments.LockfileMode_Off:
 	case arguments.LockfileMode_Update:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{}
@@ -403,8 +389,8 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	default:
 		panic("unknown lockfile mode")
 	}
-	if len(args.CommonFlags.Registry) > 0 {
-		buildSpecification.ModuleRegistryUrls = args.CommonFlags.Registry
+	if len(commonFlags.Registry) > 0 {
+		buildSpecification.ModuleRegistryUrls = commonFlags.Registry
 	} else {
 		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
 	}
@@ -506,11 +492,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	// One QueryResult key covers the whole expression: the walk it
 	// describes happens in the cluster, so the client requests a single
 	// value rather than one per target pattern.
-	queryResultKey := model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](
-		&model_analysis_pb.QueryResult_Key{
-			Expression: queryExpression,
-		},
-	)
+	queryResultKey := model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](queryKey)
 	queryResultKeyTopLevel, _ := queryResultKey.SortAndSetReferences()
 	queryResultKeyAny, err := model_core.MarshalTopLevelAny(queryResultKeyTopLevel)
 	if err != nil {
@@ -531,11 +513,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 			return nil, err
 		}
 		patchedKeyAny, err := model_core.MarshalAny(
-			model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](
-				&model_analysis_pb.QueryResult_Key{
-					Expression: queryExpression,
-				},
-			),
+			model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](queryKey),
 		)
 		if err != nil {
 			return nil, err
@@ -558,9 +536,9 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	}
 
 	logger.Info(formatted.Text("Uploading module sources"))
-	instanceName, err := object.NewInstanceName(args.CommonFlags.RemoteInstanceName)
+	instanceName, err := object.NewInstanceName(commonFlags.RemoteInstanceName)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Invalid --remote_instance_name=%#v: %s", args.CommonFlags.RemoteInstanceName, err))
+		logger.Fatal(formatted.Textf("Invalid --remote_instance_name=%#v: %s", commonFlags.RemoteInstanceName, err))
 	}
 	actionReference := createdAction.Value.GetLocalReference()
 	actionGlobalReference := instanceName.WithLocalReference(actionReference)
@@ -588,27 +566,27 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Failed to upload workspace directory: %s", err))
 	}
 
-	clientPrivateKeyData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientPrivateKey)
+	clientPrivateKeyData, err := os.ReadFile(commonFlags.RemoteExecutorClientPrivateKey)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_private_key=%#v: %s", commonFlags.RemoteExecutorClientPrivateKey, err))
 	}
 	clientPrivateKey, err := crypto.ParsePEMWithPKCS8ECDHPrivateKey(clientPrivateKeyData)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_private_key=%#v: %s", commonFlags.RemoteExecutorClientPrivateKey, err))
 	}
 
-	clientCertificateChainData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientCertificateChain)
+	clientCertificateChainData, err := os.ReadFile(commonFlags.RemoteExecutorClientCertificateChain)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_certificate_chain=%#v: %s", commonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 	clientCertificateChain, err := crypto.ParsePEMWithCertificateChain(clientCertificateChainData)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", commonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 
-	remoteExecutorClient, err := newGRPCClient(args.CommonFlags.RemoteExecutor, &args.CommonFlags)
+	remoteExecutorClient, err := newGRPCClient(commonFlags.RemoteExecutor, commonFlags)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", args.CommonFlags.RemoteExecutor, err))
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", commonFlags.RemoteExecutor, err))
 	}
 	builderClient := model_executewithstorage.NewNamespaceAddingClient(
 		model_executewithstorage.NewProtoClient(
@@ -623,7 +601,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		instanceName,
 	)
 
-	builderPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorBuilderPkixPublicKey)
+	builderPKIXPublicKey, err := base64.StdEncoding.DecodeString(commonFlags.RemoteExecutorBuilderPkixPublicKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_builder_pkix_public_key: %s", err))
 	}
@@ -791,19 +769,5 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to unmarshal the query value: %s", err))
 	}
-	queryResultValue, ok := unmarshaledValue.Message.(*model_analysis_pb.QueryResult_Value)
-	if !ok {
-		logger.Fatal(formatted.Text("The query yielded a value of an unexpected type"))
-	}
-
-	// The cluster returns the targets already sorted by label, and
-	// carries each target's kind so that --output=label_kind needs no
-	// second round trip.
-	for _, target := range queryResultValue.Targets {
-		if args.QueryFlags.Output == arguments.QueryOutput_LabelKind {
-			fmt.Printf("%s %s\n", target.Kind, target.Label)
-		} else {
-			fmt.Println(target.Label)
-		}
-	}
+	return unmarshaledValue.Message
 }

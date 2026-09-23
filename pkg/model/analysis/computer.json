@@ -157,6 +157,25 @@
          ],
          "keyContainsReferences": true
       },
+      "ConfiguredQueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "ConfiguredTargetDependencies",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
+            "ExecTransition",
+            "RootModule",
+            "Select",
+            "Target",
+            "TargetPatternExpansion",
+            "VisibleTarget"
+         ]
+      },
       "ConfiguredTarget": {
          "dependsOn": [
             "ActionEncoderObject",
@@ -183,6 +202,14 @@
             "TargetProvider",
             "TargetProviders",
             "UserDefinedTransition",
+            "VisibleTarget"
+         ],
+         "keyContainsReferences": true
+      },
+      "ConfiguredTargetDependencies": {
+         "dependsOn": [
+            "Select",
+            "Target",
             "VisibleTarget"
          ],
          "keyContainsReferences": true

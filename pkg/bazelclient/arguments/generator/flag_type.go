@@ -7,7 +7,7 @@ import (
 type flagType interface {
 	emitStructField(longName string)
 	emitDefaultInitializer(longName string)
-	emitLongNameParser(flagSetName, longName string)
+	emitLongNameParser(flagSetNames []string, longName string)
 	emitShortNameParser(flagSetName, longName, shortName string)
 	emitStartupParser(longName string)
 }
@@ -24,28 +24,38 @@ func (ft boolFlagType) emitDefaultInitializer(longName string) {
 	fmt.Printf("f.%s = %#v\n", toSymbolName(longName, true), ft.defaultValue)
 }
 
-func (boolFlagType) emitLongNameParser(flagSetName, longName string) {
-	flagSetSymbolName := toSymbolName(flagSetName, true)
-	longSymbolName := toSymbolName(longName, true)
-
-	fmt.Printf("case %#v:\n", "--"+longName)
-	fmt.Printf("  var out *bool\n")
-	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", flagSetSymbolName)
-	fmt.Printf("    out = &flags.%s\n", longSymbolName)
-	fmt.Printf("  } else if mustApply {")
+// emitFlagSetAccessor writes the chain that finds the flag set holding a
+// flag, which is a chain rather than a single test because one flag name
+// may be defined by more than one command. "--output" belongs to both
+// query and cquery, and they carry different flag sets.
+//
+// The caller has already declared "out"; this assigns it, or reports the
+// flag as not applicable when the command has none of the flag sets.
+func emitFlagSetAccessor(flagSetNames []string, longName string) {
+	for i, flagSetName := range flagSetNames {
+		keyword := "if"
+		if i > 0 {
+			keyword = "} else if"
+		}
+		fmt.Printf("  %s flags := cmd.get%sFlags(); flags != nil {\n", keyword, toSymbolName(flagSetName, true))
+		fmt.Printf("    out = &flags.%s\n", toSymbolName(longName, true))
+	}
+	fmt.Printf("  } else if mustApply {\n")
 	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
 	fmt.Printf("  }\n")
+}
+
+func (boolFlagType) emitLongNameParser(flagSetNames []string, longName string) {
+	fmt.Printf("case %#v:\n", "--"+longName)
+	fmt.Printf("  var out *bool\n")
+	emitFlagSetAccessor(flagSetNames, longName)
 	fmt.Printf("  if err := parseBool(assignmentIndex >= 0, optionValue, out, longOptionName); err != nil {\n")
 	fmt.Printf("    return err\n")
 	fmt.Printf("  }\n")
 
 	fmt.Printf("case %#v:\n", "--no"+longName)
 	fmt.Printf("  var out *bool\n")
-	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", flagSetSymbolName)
-	fmt.Printf("    out = &flags.%s\n", longSymbolName)
-	fmt.Printf("  } else if mustApply {")
-	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
-	fmt.Printf("  }\n")
+	emitFlagSetAccessor(flagSetNames, longName)
 	fmt.Printf("  if assignmentIndex >= 0 {\n")
 	fmt.Printf("    return FlagUnexpectedValueError{Flag: longOptionName}\n")
 	fmt.Printf("  }\n")
@@ -61,14 +71,14 @@ func (boolFlagType) emitShortNameParser(flagSetName, longName, shortName string)
 	fmt.Printf("case %#v:\n", "-"+shortName)
 	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", flagSetSymbolName)
 	fmt.Printf("    flags.%s = true\n", longSymbolName)
-	fmt.Printf("  } else if mustApply {")
+	fmt.Printf("  } else if mustApply {\n")
 	fmt.Printf("    return FlagNotApplicableError{Flag: shortOptionName}\n")
 	fmt.Printf("  }\n")
 
 	fmt.Printf("case %#v:\n", "-"+shortName+"-")
 	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", flagSetSymbolName)
 	fmt.Printf("    flags.%s = false\n", longSymbolName)
-	fmt.Printf("  } else if mustApply {")
+	fmt.Printf("  } else if mustApply {\n")
 	fmt.Printf("    return FlagNotApplicableError{Flag: shortOptionName}\n")
 	fmt.Printf("  }\n")
 }
@@ -94,11 +104,17 @@ func (buildSettingFlagType) emitStructField(longName string) {}
 
 func (buildSettingFlagType) emitDefaultInitializer(longName string) {}
 
-func (buildSettingFlagType) emitLongNameParser(flagSetName, longName string) {
+func (buildSettingFlagType) emitLongNameParser(flagSetNames []string, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
 	fmt.Printf("  shouldApply := false\n")
-	fmt.Printf("  if cmd.get%sFlags() != nil {\n", toSymbolName(flagSetName, true))
-	fmt.Printf("    shouldApply = true\n")
+	for i, flagSetName := range flagSetNames {
+		keyword := "if"
+		if i > 0 {
+			keyword = "} else if"
+		}
+		fmt.Printf("  %s cmd.get%sFlags() != nil {\n", keyword, toSymbolName(flagSetName, true))
+		fmt.Printf("    shouldApply = true\n")
+	}
 	fmt.Printf("  } else if mustApply {\n")
 	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
 	fmt.Printf("  }\n")
@@ -138,14 +154,10 @@ func (ft enumFlagType) emitDefaultInitializer(longName string) {
 	fmt.Printf("f.%s = %s_%s\n", toSymbolName(longName, true), ft.enumType, toSymbolName(ft.defaultValue, true))
 }
 
-func (ft enumFlagType) emitLongNameParser(flagSetName, longName string) {
+func (ft enumFlagType) emitLongNameParser(flagSetNames []string, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
 	fmt.Printf("  var out *%s\n", ft.enumType)
-	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", toSymbolName(flagSetName, true))
-	fmt.Printf("    out = &flags.%s\n", toSymbolName(longName, true))
-	fmt.Printf("  } else if mustApply {\n")
-	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
-	fmt.Printf("  }\n")
+	emitFlagSetAccessor(flagSetNames, longName)
 	fmt.Printf("  if assignmentIndex < 0 {\n")
 	fmt.Printf("    if len(*currentArgs) == 0 {\n")
 	fmt.Printf("      return FlagMissingValueError{Flag: longOptionName}\n")
@@ -174,9 +186,15 @@ func (expansionFlagType) emitStructField(longName string) {}
 
 func (expansionFlagType) emitDefaultInitializer(longName string) {}
 
-func (ft expansionFlagType) emitLongNameParser(flagSetName, longName string) {
+func (ft expansionFlagType) emitLongNameParser(flagSetNames []string, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
-	fmt.Printf("  if mustApply && cmd.get%sFlags() == nil {\n", toSymbolName(flagSetName, true))
+	fmt.Printf("  applicable := false\n")
+	for _, flagSetName := range flagSetNames {
+		fmt.Printf("  if cmd.get%sFlags() != nil {\n", toSymbolName(flagSetName, true))
+		fmt.Printf("    applicable = true\n")
+		fmt.Printf("  }\n")
+	}
+	fmt.Printf("  if mustApply && !applicable {\n")
 	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
 	fmt.Printf("  }\n")
 	fmt.Printf("  if assignmentIndex >= 0 {\n")
@@ -219,14 +237,10 @@ func (ft stringFlagType) emitDefaultInitializer(longName string) {
 	fmt.Printf("f.%s = %#v\n", toSymbolName(longName, true), ft.defaultValue)
 }
 
-func (stringFlagType) emitLongNameParser(flagSetName, longName string) {
+func (stringFlagType) emitLongNameParser(flagSetNames []string, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
 	fmt.Printf("  var out *string\n")
-	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", toSymbolName(flagSetName, true))
-	fmt.Printf("    out = &flags.%s\n", toSymbolName(longName, true))
-	fmt.Printf("  } else if mustApply {\n")
-	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
-	fmt.Printf("  }\n")
+	emitFlagSetAccessor(flagSetNames, longName)
 	fmt.Printf("  if assignmentIndex < 0 {\n")
 	fmt.Printf("    if len(*currentArgs) == 0 {\n")
 	fmt.Printf("      return FlagMissingValueError{Flag: longOptionName}\n")
@@ -257,14 +271,10 @@ func (stringListFlagType) emitDefaultInitializer(longName string) {
 	fmt.Printf("f.%s = nil\n", toSymbolName(longName, true))
 }
 
-func (stringListFlagType) emitLongNameParser(flagSetName, longName string) {
+func (stringListFlagType) emitLongNameParser(flagSetNames []string, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
 	fmt.Printf("  var out *[]string\n")
-	fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", toSymbolName(flagSetName, true))
-	fmt.Printf("    out = &flags.%s\n", toSymbolName(longName, true))
-	fmt.Printf("  } else if mustApply {\n")
-	fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
-	fmt.Printf("  }\n")
+	emitFlagSetAccessor(flagSetNames, longName)
 	fmt.Printf("  if assignmentIndex < 0 {\n")
 	fmt.Printf("    if len(*currentArgs) == 0 {\n")
 	fmt.Printf("      return FlagMissingValueError{Flag: longOptionName}\n")

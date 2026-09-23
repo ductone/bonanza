@@ -2163,6 +2163,68 @@ message TargetTestResult {
 // the counterpart of BuildResult for "bonanza_bazel test": clients
 // request both keys, so that every matched target is built and the ones
 // that are tests are also run.
+message ConfiguredTargetDependencies {
+  message Key {
+    // The label of the target whose dependencies need to be computed.
+    // The label MUST include a canonical repo name.
+    string label = 1;
+
+    // Platform constraints and build settings that are currently active.
+    bonanza.model.core.DecodableReference configuration_reference = 2
+        [(bonanza.model.core.object_format) = {
+          proto_list_type_name:
+            "bonanza.model.analysis.BuildSettingOverride";
+        }];
+  }
+
+  message Value {
+    // Canonical labels of the targets this target refers to in this
+    // configuration, sorted and deduplicated.
+    //
+    // Unlike TargetDependencies, a select() contributes only the branch
+    // the configuration selects. That difference is the whole point of
+    // cquery: query has to report every branch because it has no
+    // configuration, and a caller asking what a specific build depends
+    // on does not want the branches that build never takes.
+    repeated string labels = 1;
+  }
+}
+
+message ConfiguredQueryResult {
+  message Key {
+    // The query expression to evaluate. The same language query uses;
+    // only the edges differ.
+    QueryExpression expression = 1;
+
+    // Configurations to evaluate the expression in. A target reached in
+    // more than one configuration is reported once per configuration,
+    // as cquery does.
+    repeated BuildResult.Key.Configuration configurations = 2;
+  }
+
+  message Value {
+    message Target {
+      // The canonical label of the matched target.
+      string label = 1;
+
+      // The kind of the target, as "--output=label_kind" prints it.
+      string kind = 2;
+
+      // Identifies the configuration the target was evaluated in. This
+      // is what cquery prints in parentheses after the label. It is the
+      // index of the configuration in the key, rendered as a string,
+      // rather than a hash of the configuration's contents: within one
+      // invocation that is enough to tell two configurations apart, and
+      // it does not promise stability across invocations the way a
+      // hash would appear to.
+      string configuration = 3;
+    }
+
+    // Matched targets, sorted by label and then by configuration.
+    repeated Target targets = 1;
+  }
+}
+
 // QueryExpression is a parsed "bazel query" expression. The client
 // parses the query language and sends the tree, so that evaluation
 // happens in the cluster: an rdeps() over a large universe visits every
