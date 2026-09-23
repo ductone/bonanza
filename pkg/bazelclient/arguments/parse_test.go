@@ -40,7 +40,8 @@ func TestParse(t *testing.T) {
 				RemoteCacheCompression: true,
 			},
 			BuildFlags: arguments.BuildFlags{
-				KeepGoing: true,
+				KeepGoing:     true,
+				SymlinkPrefix: "bonanza-",
 			},
 			Arguments: []string{"//..."},
 		}, command)

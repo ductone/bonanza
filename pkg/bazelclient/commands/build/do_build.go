@@ -1,6 +1,7 @@
 package build
 
 import (
+	"bytes"
 	"context"
 	"encoding"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"bonanza.build/pkg/label"
 	"bonanza.build/pkg/model/core"
 	model_core "bonanza.build/pkg/model/core"
+	"bonanza.build/pkg/model/core/btree"
 	model_encoding "bonanza.build/pkg/model/encoding"
 	model_executewithstorage "bonanza.build/pkg/model/executewithstorage"
 	model_filesystem "bonanza.build/pkg/model/filesystem"
@@ -63,6 +66,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -884,7 +888,274 @@ func doBuild(args *arguments.TestCommand, workspacePath path.Parser, runTests bo
 				outcomesReferenceNode,
 			),
 		)
+
+		buildResultValue, err := lookUpEvaluationValue[model_analysis_pb.BuildResult_Value](
+			ctx,
+			parsedObjectPoolIngester,
+			actionEncoder,
+			*outcomesReference,
+			buildResultKeyAny,
+			referenceFormat,
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))
+		}
+		if err := materializeOutputs(
+			ctx,
+			logger,
+			&args.BuildFlags,
+			workspacePath,
+			parsedObjectPoolIngester,
+			directoryParameters.DirectoryAccessParameters,
+			fileParameters.FileAccessParameters,
+			model_core.Nested(buildResultValue, buildResultValue.Message.RootDirectory),
+		); err != nil {
+			logger.Fatal(formatted.Textf("Failed to materialize build outputs: %s", err))
+		}
 	}
+}
+
+// lookUpEvaluationValue extracts the value of a single key from the list
+// of outcomes that a build emitted.
+func lookUpEvaluationValue[
+	TMessage any,
+	TMessagePtr interface {
+		*TMessage
+		proto.Message
+	},
+](
+	ctx context.Context,
+	parsedObjectPoolIngester *model_parser.ParsedObjectPoolIngester[object.LocalReference],
+	actionEncoder model_encoding.DeterministicBinaryEncoder,
+	outcomesReference model_core.Decodable[object.LocalReference],
+	keyAny model_core.TopLevelMessage[*anypb.Any, object.LocalReference],
+	referenceFormat object.ReferenceFormat,
+) (model_core.Message[TMessagePtr, object.LocalReference], error) {
+	var bad model_core.Message[TMessagePtr, object.LocalReference]
+	keyReference, err := model_core.ComputeTopLevelMessageReference(keyAny, referenceFormat)
+	if err != nil {
+		return bad, err
+	}
+
+	evaluationsReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoListObjectParser[object.LocalReference, model_evaluation_pb.Evaluations](),
+		),
+	)
+	evaluationsList, err := evaluationsReader.ReadObject(ctx, outcomesReference)
+	if err != nil {
+		return bad, fmt.Errorf("failed to read outcomes list: %w", err)
+	}
+
+	evaluations, err := btree.Find(
+		ctx,
+		evaluationsReader,
+		evaluationsList,
+		func(entry model_core.Message[*model_evaluation_pb.Evaluations, object.LocalReference]) (int, *model_core_pb.DecodableReference) {
+			switch level := entry.Message.Level.(type) {
+			case *model_evaluation_pb.Evaluations_Leaf_:
+				return bytes.Compare(keyReference.GetRawReference(), level.Leaf.KeyReference), nil
+			case *model_evaluation_pb.Evaluations_Parent_:
+				return bytes.Compare(keyReference.GetRawReference(), level.Parent.FirstKeyReference), level.Parent.Reference
+			default:
+				return 0, nil
+			}
+		},
+	)
+	if err != nil {
+		return bad, fmt.Errorf("failed to look up key in outcomes list: %w", err)
+	}
+	if !evaluations.IsSet() {
+		return bad, errors.New("key is not present in the outcomes list")
+	}
+	leaf, ok := evaluations.Message.Level.(*model_evaluation_pb.Evaluations_Leaf_)
+	if !ok {
+		return bad, errors.New("outcomes list entry is not a valid leaf")
+	}
+
+	var evaluation model_core.Message[*model_evaluation_pb.Evaluation, object.LocalReference]
+	switch level := leaf.Leaf.Graphlet.GetEvaluation().(type) {
+	case *model_evaluation_pb.Graphlet_EvaluationInline:
+		evaluation = model_core.Nested(evaluations, level.EvaluationInline)
+	case *model_evaluation_pb.Graphlet_EvaluationExternal:
+		evaluationReader := model_parser.LookupParsedObjectReader(
+			parsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+				model_parser.NewProtoObjectParser[object.LocalReference, model_evaluation_pb.Evaluation](),
+			),
+		)
+		evaluation, err = model_parser.Dereference(ctx, evaluationReader, model_core.Nested(evaluations, level.EvaluationExternal))
+		if err != nil {
+			return bad, fmt.Errorf("failed to read evaluation: %w", err)
+		}
+	default:
+		return bad, errors.New("evaluation is not present")
+	}
+
+	value, err := model_core.UnmarshalAnyNew(model_core.Nested(evaluation, evaluation.Message.Value))
+	if err != nil {
+		return bad, fmt.Errorf("failed to unmarshal value: %w", err)
+	}
+	message, ok := value.Message.(TMessagePtr)
+	if !ok {
+		return bad, fmt.Errorf("value has type %s, while %s was expected", value.Message.ProtoReflect().Descriptor().FullName(), TMessagePtr(new(TMessage)).ProtoReflect().Descriptor().FullName())
+	}
+	return model_core.Nested(value.Decay(), message), nil
+}
+
+// materializeOutputs writes the output files of a build to a directory
+// on the local system, and creates convenience symbolic links pointing
+// into it.
+func materializeOutputs(
+	ctx context.Context,
+	logger logging.Logger,
+	buildFlags *arguments.BuildFlags,
+	workspacePath path.Parser,
+	parsedObjectPoolIngester *model_parser.ParsedObjectPoolIngester[object.LocalReference],
+	directoryAccessParameters *model_filesystem.DirectoryAccessParameters,
+	fileAccessParameters *model_filesystem.FileAccessParameters,
+	rootDirectory model_core.Message[*model_filesystem_pb.DirectoryContents, object.LocalReference],
+) error {
+	if rootDirectory.Message == nil {
+		// The build did not yield any output files.
+		return nil
+	}
+
+	outputPathStr, err := getOutputPath(buildFlags, workspacePath)
+	if err != nil {
+		return err
+	}
+	outputPath := path.LocalFormat.NewParser(outputPathStr)
+	if err := os.MkdirAll(outputPathStr, 0o777); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+	outputDirectory, err := filesystem.NewLocalDirectory(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to open output directory: %w", err)
+	}
+	defer outputDirectory.Close()
+
+	directoryEncoderObjectParser := model_parser.NewEncodedObjectParser[object.LocalReference](directoryAccessParameters.GetEncoder())
+	m := outputRootMaterializer{
+		context: ctx,
+		directoryContentsReader: model_parser.LookupParsedObjectReader(
+			parsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				directoryEncoderObjectParser,
+				model_parser.NewProtoObjectParser[object.LocalReference, model_filesystem_pb.DirectoryContents](),
+			),
+		),
+		leavesReader: model_parser.LookupParsedObjectReader(
+			parsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				directoryEncoderObjectParser,
+				model_parser.NewProtoObjectParser[object.LocalReference, model_filesystem_pb.Leaves](),
+			),
+		),
+		fileReader: model_filesystem.NewFileReader(
+			model_parser.LookupParsedObjectReader(
+				parsedObjectPoolIngester,
+				model_parser.NewChainedObjectParser(
+					model_parser.NewEncodedObjectParser[object.LocalReference](fileAccessParameters.GetFileContentsListEncoder()),
+					model_filesystem.NewFileContentsListObjectParser[object.LocalReference](),
+				),
+			),
+			model_parser.LookupParsedObjectReader(
+				parsedObjectPoolIngester,
+				model_parser.NewChainedObjectParser(
+					model_parser.NewEncodedObjectParser[object.LocalReference](fileAccessParameters.GetChunkEncoder()),
+					model_parser.NewRawObjectParser[object.LocalReference](),
+				),
+			),
+			semaphore.NewWeighted(int64(runtime.NumCPU())),
+		),
+	}
+	if err := m.materializeDirectory(rootDirectory, outputDirectory); err != nil {
+		return err
+	}
+
+	logger.Info(formatted.Textf("Wrote %d output files and %d symbolic links to %s", m.filesWritten, m.symlinksWritten, outputPathStr))
+	return createConvenienceSymlinks(buildFlags, workspacePath, outputPathStr, outputDirectory)
+}
+
+// localPathString renders a parsed path as a string in the format of the
+// local system.
+func localPathString(p path.Parser) (string, error) {
+	builder, scopeWalker := path.EmptyBuilder.Join(path.NewAbsoluteScopeWalker(path.VoidComponentWalker))
+	if err := path.Resolve(p, scopeWalker); err != nil {
+		return "", err
+	}
+	return path.LocalFormat.GetString(builder)
+}
+
+// getOutputPath returns the directory into which output files should be
+// written.
+func getOutputPath(buildFlags *arguments.BuildFlags, workspacePath path.Parser) (string, error) {
+	if p := buildFlags.OutputPath; p != "" {
+		return p, nil
+	}
+	workspacePathStr, err := localPathString(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(workspacePathStr, "bonanza-out"), nil
+}
+
+// createConvenienceSymlinks creates symbolic links in the workspace that
+// point to the directories inside the output path in which the output
+// files of the root repo are placed. This mirrors the "bazel-bin"
+// symbolic link that Bazel creates.
+func createConvenienceSymlinks(buildFlags *arguments.BuildFlags, workspacePath path.Parser, outputPathStr string, outputDirectory filesystem.Directory) error {
+	symlinkPrefix := buildFlags.SymlinkPrefix
+	if symlinkPrefix == "/" {
+		return nil
+	}
+
+	// Only create a "bin" symbolic link if the build used a single
+	// configuration, as there is no way to disambiguate otherwise.
+	bazelOut, ok := path.NewComponent("bazel-out")
+	if !ok {
+		panic("invalid component name")
+	}
+	bazelOutDirectory, err := outputDirectory.EnterDirectory(bazelOut)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	configurations, err := bazelOutDirectory.ReadDir()
+	bazelOutDirectory.Close()
+	if err != nil {
+		return err
+	}
+	if len(configurations) != 1 {
+		return nil
+	}
+
+	workspacePathStr, err := localPathString(workspacePath)
+	if err != nil {
+		return err
+	}
+	workspaceDirectory, err := filesystem.NewLocalDirectory(workspacePath)
+	if err != nil {
+		return err
+	}
+	defer workspaceDirectory.Close()
+
+	binName, ok := path.NewComponent(symlinkPrefix + "bin")
+	if !ok {
+		return fmt.Errorf("invalid --symlink_prefix=%#v", symlinkPrefix)
+	}
+	binTarget := filepath.Join(outputPathStr, "bazel-out", configurations[0].Name().String(), "bin")
+	if relativeBinTarget, err := filepath.Rel(workspacePathStr, binTarget); err == nil {
+		binTarget = relativeBinTarget
+	}
+	workspaceDirectory.Remove(binName)
+	return workspaceDirectory.Symlink(path.LocalFormat.NewParser(binTarget), binName)
 }
 
 func formatKey(namespace object.Namespace, keyAny model_core.Message[*model_core_pb.Any, object.LocalReference], jsonFormatter *messageJSONFormatter, browserURL string, outcomesReference *model_core.Decodable[object.LocalReference], longestType int) formatted.Node {

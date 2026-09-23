@@ -9,6 +9,8 @@
 # successful build proves analysis, remote action execution, and
 # artifact contents all at once. The build is run twice to demonstrate
 # that the second invocation is served from the evaluation cache.
+# Afterwards the artifacts that the client wrote to the local system are
+# inspected, covering the output materialization path as well.
 #
 # Usage:
 #   tools/e2e/run.sh
@@ -182,6 +184,28 @@ for attempt in $(seq 6); do
 done
 t1=$(date +%s)
 log "cold build succeeded in $((t1 - t0))s"
+
+# --- check that the artifacts were written to the local system ---------
+# The client materializes the output files of every target that was
+# built into an output directory, using the same naming scheme that is
+# used for action input roots.
+OUT="$PROJECT/bonanza-out"
+[ -d "$OUT" ] || die "no output directory was created at $OUT"
+verify_output() { # relative path, expected substring
+  local f="$OUT/$1"
+  [ -f "$f" ] || die "expected output file $f to exist"
+  grep -q "$2" "$f" || die "output file $f does not contain $2"
+}
+BIN_DIRS=("$OUT"/bazel-out/*/bin/external/testproject+)
+[ -d "${BIN_DIRS[0]}" ] ||
+  die "no output files were written below $OUT/bazel-out"
+BIN="${BIN_DIRS[0]#"$OUT"/}"
+verify_output "$BIN/hello.txt" "Hello from patched bonanza"
+verify_output "$BIN/verify.txt" "Hello from patched bonanza"
+verify_output "external/testproject+/action_edges_template.txt" "name={NAME}"
+[ -L "$PROJECT/bonanza-bin" ] ||
+  die "no bonanza-bin convenience symlink was created"
+log "artifacts were materialized below $OUT"
 
 log "building //:all with bonanza_bazel (warm; should be served from the evaluation cache)"
 t0=$(date +%s)

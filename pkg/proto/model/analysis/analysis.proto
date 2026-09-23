@@ -217,7 +217,23 @@ message BuildResult {
     bool run_tests = 3;
   }
 
-  message Value {}
+  message Value {
+    // A directory hierarchy containing the output files of every target
+    // that was built, merged across all target patterns and
+    // configurations. Files are named according to
+    // DirectoryLayout.INPUT_ROOT, meaning that output files are placed
+    // in "bazel-out/${configuration}/bin/external/${repo}/${path}" and
+    // source files in "external/${repo}/${path}".
+    //
+    // Because the layout encodes the configuration in the path, merging
+    // the outputs of all targets and configurations into a single
+    // directory is lossless. Clients that need per-target attribution
+    // can look up TargetCompletion values individually.
+    //
+    // The directory is empty if none of the targets that were built
+    // have any output files.
+    bonanza.model.filesystem.DirectoryContents root_directory = 1;
+  }
 }
 
 // CanonicalRepoName resolves the canonical name of a repo, given its
@@ -1910,7 +1926,12 @@ message TargetCompletion {
         }];
   }
 
-  message Value {}
+  message Value {
+    // A directory hierarchy containing the files in the DefaultInfo
+    // provider of the target, named according to
+    // DirectoryLayout.INPUT_ROOT.
+    bonanza.model.filesystem.DirectoryContents output_root = 1;
+  }
 }
 
 message TargetPatternExpansion {

@@ -23,6 +23,7 @@ import (
 	"github.com/buildbarn/bb-remote-execution/pkg/filesystem/pool"
 	"github.com/buildbarn/bb-storage/pkg/util"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 
 	"go.starlark.net/starlark"
@@ -338,8 +339,10 @@ func (c *baseComputer[TReference, TMetadata]) newStarlarkThread(ctx context.Cont
 }
 
 func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx context.Context, key *model_analysis_pb.BuildResult_Key, e BuildResultEnvironment[TReference, TMetadata]) (PatchedBuildResultValue[TMetadata], error) {
+	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
+	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	buildSpecificationMessage := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
-	if !buildSpecificationMessage.IsSet() {
+	if !gotDirectoryCreationParameters || !gotDirectoryReaders || !buildSpecificationMessage.IsSet() {
 		return PatchedBuildResultValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 	buildSpecification := buildSpecificationMessage.Message
@@ -355,6 +358,12 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 	thread := c.newStarlarkThread(ctx, e, buildSpecification.BuiltinsModuleNames)
 	missingDependencies := false
 	labelResolver := newLabelResolver(e)
+	loadOptions := &changeTrackingDirectoryLoadOptions[TReference]{
+		context:                 ctx,
+		directoryContentsReader: directoryReaders.DirectoryContents,
+		leavesReader:            directoryReaders.Leaves,
+	}
+	var rootDirectory changeTrackingDirectory[TReference, TMetadata]
 	for i, configuration := range key.Configurations {
 		targetPlatformConfigurationReference, err := c.createInitialConfiguration(ctx, e, thread, rootPackage, configuration)
 		if err != nil {
@@ -411,6 +420,21 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 				)
 				if !targetCompletionValue.IsSet() {
 					missingDependencies = true
+					continue
+				}
+
+				// Merge the target's output files into the
+				// output tree of the build as a whole. As
+				// files are named according to
+				// DirectoryLayout_INPUT_ROOT, which encodes
+				// the configuration in the path, outputs of
+				// distinct targets and configurations cannot
+				// collide.
+				if err := rootDirectory.mergeContents(
+					model_core.Nested(targetCompletionValue, targetCompletionValue.Message.OutputRoot),
+					loadOptions,
+				); err != nil {
+					return PatchedBuildResultValue[TMetadata]{}, fmt.Errorf("failed to merge outputs of target %#v: %w", visibleTargetValue.Message.Label, err)
 				}
 
 				// "bazel test" additionally runs whichever of
@@ -453,7 +477,36 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 		return PatchedBuildResultValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
-	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.BuildResult_Value{}), nil
+	group, groupCtx := errgroup.WithContext(ctx)
+	var createdRootDirectory model_filesystem.CreatedDirectory[TMetadata]
+	group.Go(func() error {
+		return model_filesystem.CreateDirectoryMerkleTree[TMetadata, TMetadata](
+			groupCtx,
+			semaphore.NewWeighted(1),
+			group,
+			directoryCreationParameters,
+			&capturableChangeTrackingDirectory[TReference, TMetadata]{
+				options: &capturableChangeTrackingDirectoryOptions[TReference, TMetadata]{
+					context:                 ctx,
+					directoryContentsReader: directoryReaders.DirectoryContents,
+					objectCapturer:          e,
+				},
+				directory: &rootDirectory,
+			},
+			model_filesystem.NewSimpleDirectoryMerkleTreeCapturer[TMetadata](e),
+			&createdRootDirectory,
+		)
+	})
+	if err := group.Wait(); err != nil {
+		return PatchedBuildResultValue[TMetadata]{}, err
+	}
+
+	return model_core.NewPatchedMessage(
+		&model_analysis_pb.BuildResult_Value{
+			RootDirectory: createdRootDirectory.Message.Message,
+		},
+		createdRootDirectory.Message.Patcher,
+	), nil
 }
 
 // targetIsTest reports whether a target is declared by a test rule. It is
