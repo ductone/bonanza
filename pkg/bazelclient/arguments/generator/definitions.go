@@ -33,6 +33,7 @@ var enumTypes = map[string][]string{
 	"QueryOutput": {
 		"label",
 		"label_kind",
+		"files",
 	},
 	"TestOutput": {
 		"summary",
@@ -261,6 +262,18 @@ var commands = map[string]command{
 				},
 			},
 		},
+		takesArguments: true,
+	},
+	"cquery": {
+		ancestor: "build",
+		flags: []flag{{
+			longName:    "output",
+			description: "Print configured target labels, rule kinds and labels, or default output file paths.",
+			flagType: enumFlagType{
+				enumType:     "QueryOutput",
+				defaultValue: "label",
+			},
+		}},
 		takesArguments: true,
 	},
 	"clean": {

@@ -9,12 +9,13 @@ import (
 	"bonanza.build/pkg/bazelclient/arguments"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
 	commands_clean "bonanza.build/pkg/bazelclient/commands/clean"
+	commands_cquery "bonanza.build/pkg/bazelclient/commands/cquery"
 	commands_help "bonanza.build/pkg/bazelclient/commands/help"
 	commands_info "bonanza.build/pkg/bazelclient/commands/info"
 	commands_license "bonanza.build/pkg/bazelclient/commands/license"
-	commands_test "bonanza.build/pkg/bazelclient/commands/test"
-	commands_run "bonanza.build/pkg/bazelclient/commands/run"
 	commands_query "bonanza.build/pkg/bazelclient/commands/query"
+	commands_run "bonanza.build/pkg/bazelclient/commands/run"
+	commands_test "bonanza.build/pkg/bazelclient/commands/test"
 	commands_version "bonanza.build/pkg/bazelclient/commands/version"
 	"bonanza.build/pkg/bazelclient/formatted"
 	"bonanza.build/pkg/bazelclient/logging"
@@ -77,6 +78,8 @@ func main() {
 		commands_build.DoBuild(typedCmd, workspacePath)
 	case *arguments.CleanCommand:
 		commands_clean.DoClean(typedCmd)
+	case *arguments.CqueryCommand:
+		commands_cquery.DoCquery(typedCmd, workspacePath)
 	case *arguments.HelpCommand:
 		commands_help.DoHelp(typedCmd)
 	case *arguments.InfoCommand:

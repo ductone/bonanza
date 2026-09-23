@@ -2489,3 +2489,24 @@ message VisibleTarget {
     string label = 1;
   }
 }
+
+// ConfiguredQueryResult analyzes targets matched by a loading-phase query
+// without evaluating their build actions. Only expressions whose result set is
+// independent of configured dependency edges are accepted by the client.
+message ConfiguredQueryResult {
+  message Key {
+    QueryExpression expression = 1;
+    repeated BuildResult.Key.Configuration configurations = 2;
+  }
+
+  message Value {
+    message Target {
+      string label = 1;
+      string kind = 2;
+      // Paths relative to the root of a Bonanza materialized output tree.
+      repeated string files = 3;
+    }
+    repeated Target targets = 1;
+  }
+}
+

@@ -157,6 +157,21 @@
          ],
          "keyContainsReferences": true
       },
+      "ConfiguredQueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "QueryResult",
+            "RootModule",
+            "Target",
+            "TargetProvider",
+            "VisibleTarget"
+         ]
+      },
       "ConfiguredTarget": {
          "dependsOn": [
             "ActionEncoderObject",

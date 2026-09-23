@@ -25,6 +25,7 @@ go_library(
         "completed_action_result.go",
         "computer.go",
         "configured_aspect.go",
+        "configured_query_result.go",
         "configured_target.go",
         "directory_creation_parameters.go",
         "directory_readers.go",
@@ -140,6 +141,16 @@ go_library(
         "@org_golang_google_protobuf//types/known/wrapperspb",
         "@org_golang_x_sync//errgroup",
         "@org_golang_x_sync//semaphore",
+    ],
+)
+
+go_test(
+    name = "configured_query_test",
+    srcs = ["configured_query_result_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/proto/model/analysis",
+        "@com_github_stretchr_testify//require",
     ],
 )
 

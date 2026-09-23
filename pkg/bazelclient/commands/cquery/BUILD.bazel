@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cquery",
+    srcs = ["do_cquery.go"],
+    importpath = "bonanza.build/pkg/bazelclient/commands/cquery",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/bazelclient/arguments",
+        "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/commands/query",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/proto/model/analysis",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "cquery_test",
+    srcs = ["do_cquery_test.go"],
+    embed = [":cquery"],
+    deps = [
+        "//pkg/proto/model/analysis",
+        "@com_github_stretchr_testify//require",
+    ],
+)

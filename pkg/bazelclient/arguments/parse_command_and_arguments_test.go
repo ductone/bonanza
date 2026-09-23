@@ -618,3 +618,23 @@ func TestParseCommandAndArguments(t *testing.T) {
 		})
 	})
 }
+
+func TestQueryOutputFlagIsScopedToQueryCommands(t *testing.T) {
+	query, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"query", "--output=label_kind", "//pkg:all",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_LabelKind), query.(*arguments.QueryCommand).QueryFlags.Output)
+
+	cquery, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"cquery", "--output=files", "--platforms=//platforms:exec", "set(//pkg:target)",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_Files), cquery.(*arguments.CqueryCommand).CqueryFlags.Output)
+	require.Equal(t, "//platforms:exec", cquery.(*arguments.CqueryCommand).BuildFlags.Platforms)
+
+	_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"build", "--output=files", "//pkg:target",
+	})
+	require.ErrorContains(t, err, "does not apply")
+}
