@@ -602,6 +602,21 @@
             "type": "*RuleImplementationWrappers"
          }
       },
+      "RunTarget": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetCompletion",
+            "TargetPatternExpansion",
+            "VisibleTarget"
+         ]
+      },
       "Select": {
          "dependsOn": [
             "CanonicalRepoName",

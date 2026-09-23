@@ -15,6 +15,9 @@
 # that passes, one that fails (which must be reported as a result
 # rather than a build failure), and one that only passes when
 # --test_filter reaches the test binary.
+# inspected, covering the output materialization path as well, and
+# "bonanza_bazel run" launches an executable target to cover runfiles
+# materialization and the environment that executables are given.
 #
 # Usage:
 #   tools/e2e/run.sh
@@ -250,6 +253,32 @@ log "running //:filtered_test with bonanza_bazel --test_filter"
   die "--test_filter did not reach the test binary"
 }
 log "tests ran and were reported correctly"
+
+# --- run a target -------------------------------------------------------
+# "bonanza_bazel run" materializes the executable together with its
+# runfiles directory and launches it. The script that is launched
+# reports its arguments, its working directory, and the environment
+# variables that Bazel exposes to executables, and reads one of its
+# runfiles.
+log "running //:runnable with bonanza_bazel"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" run --config=bonanza //:runnable -- one two \
+  > "$RUN_DIR/run_stdout.log" 2> "$RUN_DIR/run_stderr.log") || {
+  cat "$RUN_DIR/run_stderr.log" >&2
+  die "bonanza_bazel run failed"
+}
+cat "$RUN_DIR/run_stderr.log" >&2
+cat "$RUN_DIR/run_stdout.log" >&2
+verify_run() { # expected substring
+  grep -qF "$1" "$RUN_DIR/run_stdout.log" ||
+    die "output of the launched executable does not contain $1"
+}
+verify_run "run: args=one two"
+verify_run "run: cwd=testproject+"
+verify_run "run: runfiles=runnable.runfiles"
+verify_run "run: data=present"
+grep -qF "run: workspace=$(basename "$PROJECT")" "$RUN_DIR/run_stdout.log" ||
+  die "BUILD_WORKSPACE_DIRECTORY was not passed to the launched executable"
+log "//:runnable ran with its runfiles in place"
 
 log "building //:all with bonanza_bazel (warm; should be served from the evaluation cache)"
 t0=$(date +%s)

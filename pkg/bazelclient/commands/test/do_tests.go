@@ -6,7 +6,6 @@ import (
 	"runtime"
 
 	"bonanza.build/pkg/bazelclient/arguments"
-	"bonanza.build/pkg/bazelclient/commands"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
 	"bonanza.build/pkg/bazelclient/formatted"
 	"bonanza.build/pkg/bazelclient/logging"
@@ -35,45 +34,45 @@ const testsFailedExitCode = 3
 // tests.
 func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
-	commands.ValidateInsideWorkspace(logger, "test", workspacePath)
 
 	// The target patterns and configurations that the tests need to
 	// be run for are only known once the invocation has been
 	// processed, so capture the key that gets requested.
 	var testResultKey *model_analysis_pb.TestResult_Key
-	results := commands_build.PerformBuild(
-		logger,
-		&commands_build.Invocation{
-			CommonFlags:           &args.CommonFlags,
-			BuildFlags:            &args.BuildFlags,
-			BuildSettingOverrides: args.BuildSettingOverrides,
-			Arguments:             args.Arguments,
-		},
-		workspacePath,
-		func(targetPatterns []string, configurations []*model_analysis_pb.BuildResult_Key_Configuration) ([]proto.Message, error) {
+	o := commands_build.PerformBuild(
+		"test",
+		&args.CommonFlags,
+		&args.BuildFlags,
+		args.BuildSettingOverrides,
+		args.Arguments,
+		func(targetPatterns []string, configurations []*model_analysis_pb.BuildResult_Key_Configuration) []proto.Message {
 			testResultKey = &model_analysis_pb.TestResult_Key{
 				Configurations: configurations,
 				TargetPatterns: targetPatterns,
 				TestFilter:     args.TestFlags.TestFilter,
 			}
-			return []proto.Message{testResultKey}, nil
+			return []proto.Message{testResultKey}
 		},
+		workspacePath,
 	)
-	if results == nil {
+	if o == nil {
 		return
 	}
 
 	// Tests only run for targets that built successfully, so leave
 	// the outputs of the build behind just like "build" would have.
-	if err := commands_build.MaterializeBuildResult(results, &args.BuildFlags, workspacePath); err != nil {
+	buildResultValue, err := commands_build.LookUpValue[model_analysis_pb.BuildResult_Value](o, &model_analysis_pb.BuildResult_Key{
+		TargetPatterns: o.TargetPatterns,
+		Configurations: o.Configurations,
+	})
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))
+	}
+	if err := o.MaterializeBuildOutputs(model_core.Nested(buildResultValue, buildResultValue.Message.RootDirectory)); err != nil {
 		logger.Fatal(formatted.Textf("Failed to materialize build outputs: %s", err))
 	}
 
-	testResultKeyAny, err := commands_build.MarshalEvaluationKey(testResultKey)
-	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to marshal test result key: %s", err))
-	}
-	testResult, err := commands_build.LookUpEvaluationValue[model_analysis_pb.TestResult_Value](results, testResultKeyAny)
+	testResult, err := commands_build.LookUpValue[model_analysis_pb.TestResult_Value](o, testResultKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to look up test results: %s", err))
 	}
@@ -84,7 +83,7 @@ func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 		return
 	}
 
-	logPrinter := newTestLogPrinter(results)
+	logPrinter := newTestLogPrinter(o)
 	failed := 0
 	for _, test := range tests {
 		passed := test.Status == model_analysis_pb.TestStatus_TEST_STATUS_PASSED
@@ -125,17 +124,17 @@ func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 // testLogPrinter writes the data that test binaries wrote to standard
 // output and standard error to the console of the client.
 type testLogPrinter struct {
-	results       *commands_build.Results
+	outcome       *commands_build.Outcome
 	outputsReader model_parser.MessageObjectReader[object.LocalReference, *model_command_pb.Outputs]
 	fileReader    *model_filesystem.FileReader[object.LocalReference]
 }
 
-func newTestLogPrinter(results *commands_build.Results) *testLogPrinter {
-	parsedObjectPoolIngester := results.ParsedObjectPoolIngester
-	directoryAccessParameters := results.DirectoryParameters.DirectoryAccessParameters
-	fileAccessParameters := results.FileParameters.FileAccessParameters
+func newTestLogPrinter(o *commands_build.Outcome) *testLogPrinter {
+	parsedObjectPoolIngester := o.ParsedObjectPoolIngester
+	directoryAccessParameters := o.DirectoryAccessParameters
+	fileAccessParameters := o.FileAccessParameters
 	return &testLogPrinter{
-		results: results,
+		outcome: o,
 		outputsReader: model_parser.LookupParsedObjectReader(
 			parsedObjectPoolIngester,
 			model_parser.NewChainedObjectParser(
@@ -166,7 +165,7 @@ func newTestLogPrinter(results *commands_build.Results) *testLogPrinter {
 // print writes the standard output and standard error of a single test
 // action, which is what Bazel would have stored in its test.log.
 func (p *testLogPrinter) print(outputsReference model_core.Message[*model_core_pb.DecodableReference, object.LocalReference]) error {
-	outputs, err := model_parser.MaybeDereference(p.results.Context, p.outputsReader, outputsReference)
+	outputs, err := model_parser.MaybeDereference(p.outcome.Context, p.outputsReader, outputsReference)
 	if err != nil {
 		return fmt.Errorf("failed to obtain outputs of test action: %w", err)
 	}
@@ -181,7 +180,7 @@ func (p *testLogPrinter) print(outputsReference model_core.Message[*model_core_p
 		if err != nil {
 			return err
 		}
-		if err := p.fileReader.FileWriteTo(p.results.Context, entry, os.Stdout); err != nil {
+		if err := p.fileReader.FileWriteTo(p.outcome.Context, entry, os.Stdout); err != nil {
 			return err
 		}
 	}
