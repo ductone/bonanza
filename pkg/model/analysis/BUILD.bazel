@@ -26,6 +26,8 @@ go_library(
         "computer.go",
         "configured_aspect.go",
         "configured_target.go",
+        "configured_query_result.go",
+        "configured_target_dependencies.go",
         "directory_creation_parameters.go",
         "directory_readers.go",
         "empty_default_info.go",

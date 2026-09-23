@@ -42,6 +42,13 @@ func (c *baseComputer[TReference, TMetadata]) ComputeQueryResultValue(ctx contex
 		environment:   e,
 		rootRepo:      rootModule.ToModuleInstance(nil).GetBareCanonicalRepo(),
 		labelResolver: newLabelResolver(e),
+		dependenciesOfTarget: func(targetLabel string) ([]string, bool) {
+			value := e.GetTargetDependenciesValue(&model_analysis_pb.TargetDependencies_Key{Label: targetLabel})
+			if !value.IsSet() {
+				return nil, false
+			}
+			return value.Message.Labels, true
+		},
 	}
 	labels, err := ev.evaluate(key.Expression)
 	if err != nil {
@@ -80,12 +87,32 @@ func (c *baseComputer[TReference, TMetadata]) ComputeQueryResultValue(ctx contex
 	}), nil
 }
 
+// queryEvaluatorEnvironment is what evaluating a query expression needs
+// regardless of whether the edges being walked are the loading-phase
+// ones or the configured ones. It is narrower than either generated
+// environment so that query and cquery can share one evaluator.
+type queryEvaluatorEnvironment[TReference any] interface {
+	expandCanonicalTargetPatternEnvironment[TReference]
+	labelResolverEnvironment[TReference]
+
+	GetTargetValue(*model_analysis_pb.Target_Key) model_core.Message[*model_analysis_pb.Target_Value, TReference]
+	GetCompiledBzlFileGlobalValue(*model_analysis_pb.CompiledBzlFileGlobal_Key) model_core.Message[*model_analysis_pb.CompiledBzlFileGlobal_Value, TReference]
+}
+
 type queryEvaluator[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata] struct {
 	context       context.Context
 	computer      *baseComputer[TReference, TMetadata]
-	environment   QueryResultEnvironment[TReference, TMetadata]
+	environment   queryEvaluatorEnvironment[TReference]
 	rootRepo      label.CanonicalRepo
 	labelResolver label.Resolver
+
+	// dependenciesOfTarget yields the edges leaving a target, and
+	// reports false when the value is not available yet. It is the ONLY
+	// thing that differs between query and cquery: query passes the
+	// loading-phase edges, where every select() branch contributes,
+	// while cquery passes the edges of one configuration, where the
+	// select() has been resolved.
+	dependenciesOfTarget func(targetLabel string) ([]string, bool)
 
 	// missingDependencies records that at least one value the walk
 	// needed was not available yet. Evaluation continues so that the
@@ -196,12 +223,12 @@ func (ev *queryEvaluator[TReference, TMetadata]) expandPatterns(patterns []strin
 func (ev *queryEvaluator[TReference, TMetadata]) dependenciesOf(labels map[string]struct{}) map[string][]string {
 	out := make(map[string][]string, len(labels))
 	for l := range labels {
-		value := ev.environment.GetTargetDependenciesValue(&model_analysis_pb.TargetDependencies_Key{Label: l})
-		if !value.IsSet() {
+		dependencies, ok := ev.dependenciesOfTarget(l)
+		if !ok {
 			ev.missingDependencies = true
 			continue
 		}
-		out[l] = value.Message.Labels
+		out[l] = dependencies
 	}
 	return out
 }

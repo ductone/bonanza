@@ -77,6 +77,8 @@ func main() {
 		commands_build.DoBuild(typedCmd, workspacePath)
 	case *arguments.CleanCommand:
 		commands_clean.DoClean(typedCmd)
+	case *arguments.CqueryCommand:
+		commands_query.DoCQuery(typedCmd, workspacePath)
 	case *arguments.HelpCommand:
 		commands_help.DoHelp(typedCmd)
 	case *arguments.InfoCommand:

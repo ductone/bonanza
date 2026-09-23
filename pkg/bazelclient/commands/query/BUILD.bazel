@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "query",
     srcs = [
+        "commands.go",
         "do_query.go",
         "encode.go",
         "expression.go",
@@ -11,6 +12,7 @@ go_library(
     importpath = "bonanza.build/pkg/bazelclient/commands/query",
     visibility = ["//visibility:public"],
     deps = [
+        "@org_golang_google_protobuf//proto",
         "//pkg/bazelclient/arguments",
         "//pkg/bazelclient/commands",
         "//pkg/bazelclient/commands/build",

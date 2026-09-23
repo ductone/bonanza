@@ -118,4 +118,45 @@ func TestParse(t *testing.T) {
 			GnuFormat: true,
 		}, command.(*arguments.VersionCommand).VersionFlags)
 	})
+
+	// "--output" is declared by both query and cquery, on different
+	// flag sets. The generated parser emits one case per flag NAME
+	// across every command, so before it tested each flag set in turn
+	// this pair did not compile at all.
+	t.Run("QueryOutput", func(t *testing.T) {
+		rootDirectory := NewMockDirectory(ctrl)
+
+		command, err := arguments.Parse(
+			[]string{"--ignore_all_rc_files", "query", "--output=label_kind", "//..."},
+			rootDirectory,
+			path.UNIXFormat,
+			/* workspacePath = */ path.UNIXFormat.NewParser("/home/bob/myproject"),
+			/* homeDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob"),
+			/* workingDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob/myproject/src"),
+		)
+		require.NoError(t, err)
+		queryCommand, ok := command.(*arguments.QueryCommand)
+		require.True(t, ok)
+		require.EqualValues(t, arguments.QueryOutput_LabelKind, queryCommand.QueryFlags.Output)
+	})
+
+	t.Run("CqueryOutput", func(t *testing.T) {
+		rootDirectory := NewMockDirectory(ctrl)
+
+		command, err := arguments.Parse(
+			[]string{"--ignore_all_rc_files", "cquery", "--output=label_kind", "--platforms=//:host", "//..."},
+			rootDirectory,
+			path.UNIXFormat,
+			/* workspacePath = */ path.UNIXFormat.NewParser("/home/bob/myproject"),
+			/* homeDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob"),
+			/* workingDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob/myproject/src"),
+		)
+		require.NoError(t, err)
+		cqueryCommand, ok := command.(*arguments.CqueryCommand)
+		require.True(t, ok)
+		// cquery gets its own --output, and build's flags as well,
+		// which is what lets it name a configuration.
+		require.EqualValues(t, arguments.QueryOutput_LabelKind, cqueryCommand.CqueryFlags.Output)
+		require.Equal(t, "//:host", cqueryCommand.BuildFlags.Platforms)
+	})
 }
