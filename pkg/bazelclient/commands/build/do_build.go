@@ -216,6 +216,26 @@ type Outcome struct {
 	workspacePath path.Parser
 }
 
+// ResolveTargetPatterns reads the optional target file before starting a build.
+func ResolveTargetPatterns(patterns []string, filename string) ([]string, error) {
+	if filename == "" {
+		return patterns, nil
+	}
+	if len(patterns) != 0 {
+		return nil, fmt.Errorf("--target_pattern_file cannot be combined with command-line target patterns")
+	}
+	contents, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("read --target_pattern_file=%q: %w", filename, err)
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		if pattern := strings.TrimSpace(line); pattern != "" {
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns, nil
+}
+
 // PerformBuild builds a set of target patterns in the current
 // workspace. In addition to the BuildResult key that describes the
 // build as a whole, callers may request the values of additional keys,
@@ -236,6 +256,10 @@ func PerformBuild(
 ) *Outcome {
 	logger := logging.NewLoggerFromFlags(commonFlags)
 	commands.ValidateInsideWorkspace(logger, commandName, workspacePath)
+	targetPatternArguments, err := ResolveTargetPatterns(targetPatternArguments, buildFlags.TargetPatternFile)
+	if err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
 
 	remoteCacheClient, err := newGRPCClient(commonFlags.RemoteCache, commonFlags)
 	if err != nil {

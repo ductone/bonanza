@@ -69,6 +69,7 @@ go_test(
     srcs = [
         "materialize_output_root_test.go",
         "source_exclusions_test.go",
+        "target_pattern_file_test.go",
     ],
     embed = [":build"],
     deps = [

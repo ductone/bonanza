@@ -40,11 +40,23 @@ func DoRun(args *arguments.RunCommand, workspacePath path.Parser) {
 	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
 	commands.ValidateInsideWorkspace(logger, "run", workspacePath)
 
-	if len(args.Arguments) == 0 {
-		logger.Fatal(formatted.Text("No target specified, while \"run\" expects exactly one"))
+	targetPatternArguments := args.Arguments
+	executableArguments := []string(nil)
+	buildFlags := args.BuildFlags
+	if buildFlags.TargetPatternFile != "" {
+		var err error
+		targetPatternArguments, err = commands_build.ResolveTargetPatterns(args.Arguments, buildFlags.TargetPatternFile)
+		if err != nil {
+			logger.Fatal(formatted.Text(err.Error()))
+		}
+		buildFlags.TargetPatternFile = ""
+	} else if len(targetPatternArguments) > 0 {
+		targetPatternArguments = args.Arguments[:1]
+		executableArguments = args.Arguments[1:]
 	}
-	targetPatternArguments := args.Arguments[:1]
-	executableArguments := args.Arguments[1:]
+	if len(targetPatternArguments) != 1 {
+		logger.Fatal(formatted.Text("The \"run\" command expects exactly one target"))
+	}
 
 	// Build the target. In addition to the outputs of the build, we
 	// need to know which executable to launch and which runfiles
@@ -53,7 +65,7 @@ func DoRun(args *arguments.RunCommand, workspacePath path.Parser) {
 	o := commands_build.PerformBuild(
 		"run",
 		&args.CommonFlags,
-		&args.BuildFlags,
+		&buildFlags,
 		args.BuildSettingOverrides,
 		targetPatternArguments,
 		func(targetPatterns []string, configurations []*model_analysis_pb.BuildResult_Key_Configuration) []proto.Message {
@@ -202,4 +214,3 @@ func getCommandLine(runUnder, executablePathStr string, executableArguments []st
 	argv = append(argv, executablePathStr)
 	return append(argv, executableArguments...), nil
 }
-

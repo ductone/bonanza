@@ -249,6 +249,11 @@ var commands = map[string]command{
 				flagType:    stringFlagType{},
 			},
 			{
+				longName:    "target_pattern_file",
+				description: "Read newline-separated target patterns from this file instead of the command line. Supplying both is an error.",
+				flagType:    stringFlagType{},
+			},
+			{
 				longName:    "symlink_prefix",
 				description: "The prefix that is prepended to any of the convenience symbolic links that are created after a build. Setting it to \"/\" causes no symbolic links to be created.",
 				flagType: stringFlagType{
