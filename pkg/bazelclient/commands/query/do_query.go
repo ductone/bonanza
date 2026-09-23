@@ -102,11 +102,27 @@ func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.C
 type localCapturableDirectoryOptions[TFile model_core.ReferenceMetadata] struct {
 	fileParameters *model_filesystem.FileCreationParameters
 	capturer       model_filesystem.FileMerkleTreeCapturer[TFile]
+	exclusions     *commands_build.SourceExclusions
 }
 
 type localCapturableDirectory[TDirectory, TFile model_core.ReferenceMetadata] struct {
 	filesystem.DirectoryCloser
-	options *localCapturableDirectoryOptions[TFile]
+	options      *localCapturableDirectoryOptions[TFile]
+	relativePath []string
+}
+
+func (d *localCapturableDirectory[TDirectory, TFile]) ReadDir() ([]filesystem.FileInfo, error) {
+	entries, err := d.DirectoryCloser.ReadDir()
+	if err != nil {
+		return nil, err
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if !d.options.exclusions.ShouldExclude(d.relativePath, entry) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(name path.Component) (*model_filesystem.CreatedDirectory[TDirectory], model_filesystem.CapturableDirectory[TDirectory, TFile], error) {
@@ -114,9 +130,11 @@ func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(n
 	if err != nil {
 		return nil, nil, err
 	}
+	childRelativePath := append(slices.Clone(d.relativePath), name.String())
 	return nil, &localCapturableDirectory[TDirectory, TFile]{
 		DirectoryCloser: child,
 		options:         d.options,
+		relativePath:    childRelativePath,
 	}, nil
 }
 
@@ -223,6 +241,12 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
+	workspacePathStr, err := commands_build.ResolveToAbsoluteString(workspacePath)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve workspace path: %s", err))
+	}
+	workspaceBaseName := commands_build.BaseName(workspacePathStr)
+
 	// Augment results with modules provided to --override_module.
 	for _, overrideModule := range args.CommonFlags.OverrideModule {
 		fields := strings.SplitN(overrideModule, "=", 2)
@@ -308,6 +332,20 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 			if err != nil {
 				return util.StatusWrapf(err, "Failed to open root directory of module %#v", moduleName.String())
 			}
+			modulePathStr, err := commands_build.ResolveToAbsoluteString(modulePath)
+			if err != nil {
+				moduleRootDirectory.Close()
+				return util.StatusWrapf(err, "Failed to resolve module %#v path", moduleName.String())
+			}
+			exclusions, err := commands_build.NewSourceExclusions(
+				logger, moduleRootDirectory, moduleName.String(), modulePathStr,
+				moduleName == rootModuleName, workspaceBaseName,
+				args.CommonFlags.RespectGitignore, moduleName == rootModuleName && args.CommonFlags.RequireGitignore,
+			)
+			if err != nil {
+				moduleRootDirectory.Close()
+				return err
+			}
 			moduleRootDirectories = append(moduleRootDirectories, localCapturedDirectory{
 				DirectoryCloser: moduleRootDirectory,
 			})
@@ -321,6 +359,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 					options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
 						fileParameters: fileParameters,
 						capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
+						exclusions:     exclusions,
 					},
 				},
 				model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
@@ -405,7 +444,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 	}
 	if len(args.CommonFlags.Registry) > 0 {
 		buildSpecification.ModuleRegistryUrls = args.CommonFlags.Registry
-	} else {
+	} else if !args.CommonFlags.StrictModuleResolution {
 		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
 	}
 	buildSpecificationPatcher := model_core.NewReferenceMessagePatcher[dag.ObjectContentsWalker]()

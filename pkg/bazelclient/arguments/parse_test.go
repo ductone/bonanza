@@ -38,6 +38,7 @@ func TestParse(t *testing.T) {
 				Color:                  arguments.Color_Auto,
 				LockfileMode:           arguments.LockfileMode_Update,
 				RemoteCacheCompression: true,
+				RespectGitignore:       true,
 			},
 			BuildFlags: arguments.BuildFlags{
 				KeepGoing:     true,

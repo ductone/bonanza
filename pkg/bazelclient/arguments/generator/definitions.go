@@ -184,9 +184,30 @@ var commonFlags = []flag{
 		flagType:    stringFlagType{},
 	},
 	{
+		longName:    "respect_gitignore",
+		description: "If true, files and directories that are ignored by Git (via .gitignore, .git/info/exclude, or the global excludes file) are excluded from the module source tree that gets uploaded to the remote cache, for any module whose root directory is itself the top level of a Git working tree. This has no effect on modules that aren't Git working trees, such as most vendored/extracted dependencies. Disable this if a module relies on a Git-ignored file also being a build input.",
+		flagType: boolFlagType{
+			defaultValue: true,
+		},
+	},
+	{
+		longName:    "require_gitignore",
+		description: "Fail before uploading any module source if the root module's Git ignore rules cannot be read. Use when the checkout contains ignored local credentials.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
 		longName:    "rule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of rule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
+	},
+	{
+		longName:    "strict_module_resolution",
+		description: "If true, never fall back to the default Bazel Central Registry when --registry is unset. A module not available through a local_path_override() or --override_module then fails resolution instead of being fetched.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
 	},
 	{
 		longName:    "subrule_implementation_wrapper_identifier",

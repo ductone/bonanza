@@ -67,3 +67,18 @@ go_test(
         "@com_github_stretchr_testify//require",
     ],
 )
+
+go_test(
+    name = "query_source_test",
+    srcs = ["source_exclusions_test.go"],
+    embed = [":query"],
+    deps = [
+        "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/model/core",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
+        "@com_github_stretchr_testify//require",
+    ],
+)

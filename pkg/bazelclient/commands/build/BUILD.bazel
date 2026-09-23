@@ -6,6 +6,8 @@ go_library(
         "do_build.go",
         "local_path_extracting_module_dot_bazel_handler.go",
         "materialize_output_root.go",
+        "path_utils.go",
+        "source_exclusions.go",
     ],
     importpath = "bonanza.build/pkg/bazelclient/commands/build",
     visibility = ["//visibility:public"],
@@ -64,9 +66,14 @@ go_library(
 
 go_test(
     name = "build_test",
-    srcs = ["materialize_output_root_test.go"],
+    srcs = [
+        "materialize_output_root_test.go",
+        "source_exclusions_test.go",
+    ],
     embed = [":build"],
     deps = [
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
         "//pkg/model/core",
         "//pkg/proto/model/filesystem",
         "//pkg/storage/object",

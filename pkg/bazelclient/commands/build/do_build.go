@@ -102,11 +102,36 @@ func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.C
 type localCapturableDirectoryOptions[TFile model_core.ReferenceMetadata] struct {
 	fileParameters *model_filesystem.FileCreationParameters
 	capturer       model_filesystem.FileMerkleTreeCapturer[TFile]
+	exclusions     *SourceExclusions
 }
 
 type localCapturableDirectory[TDirectory, TFile model_core.ReferenceMetadata] struct {
 	filesystem.DirectoryCloser
 	options *localCapturableDirectoryOptions[TFile]
+	// relativePath is the path of this directory relative to the
+	// root of the module being scanned, used to evaluate
+	// exclusions that only apply at a specific location (e.g. a
+	// .bazelignore entry of "frontend/node_modules", or Bazel's
+	// convenience symlinks, which only ever appear at the
+	// workspace root).
+	relativePath []string
+}
+
+func (d *localCapturableDirectory[TDirectory, TFile]) ReadDir() ([]filesystem.FileInfo, error) {
+	entries, err := d.DirectoryCloser.ReadDir()
+	if err != nil {
+		return nil, err
+	}
+	if d.options.exclusions == nil {
+		return entries, nil
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if !d.options.exclusions.ShouldExclude(d.relativePath, entry) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(name path.Component) (*model_filesystem.CreatedDirectory[TDirectory], model_filesystem.CapturableDirectory[TDirectory, TFile], error) {
@@ -114,9 +139,13 @@ func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(n
 	if err != nil {
 		return nil, nil, err
 	}
+	childRelativePath := make([]string, len(d.relativePath)+1)
+	copy(childRelativePath, d.relativePath)
+	childRelativePath[len(d.relativePath)] = name.String()
 	return nil, &localCapturableDirectory[TDirectory, TFile]{
 		DirectoryCloser: child,
 		options:         d.options,
+		relativePath:    childRelativePath,
 	}, nil
 }
 
@@ -246,6 +275,12 @@ func PerformBuild(
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
+	workspacePathStr, err := ResolveToAbsoluteString(workspacePath)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve workspace path: %s", err))
+	}
+	workspaceBaseName := BaseName(workspacePathStr)
+
 	// Augment results with modules provided to --override_module.
 	for _, overrideModule := range commonFlags.OverrideModule {
 		fields := strings.SplitN(overrideModule, "=", 2)
@@ -316,6 +351,30 @@ func PerformBuild(
 		logger.Fatal(formatted.Textf("Invalid file creation parameters: %s", err))
 	}
 
+	// Determine, for each module, how many path components separate
+	// it from the workspace root. This is used below to decide
+	// whether a symbolic link that escapes a module's own root
+	// directory (e.g. the ".bazelversion -> ../.bazelversion" links
+	// that Bazel's vendor mode places inside vendored modules) still
+	// remains within the workspace as a whole, as opposed to
+	// escaping it entirely.
+	moduleDepths := make(map[label.Module]int, len(moduleNames))
+	for _, moduleName := range moduleNames {
+		modulePathStr, err := ResolveToAbsoluteString(modulePaths[moduleName])
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to resolve path of module %#v: %s", moduleName.String(), err))
+		}
+		depth, withinWorkspace := relativeDepth(workspacePathStr, modulePathStr)
+		if !withinWorkspace {
+			// The module lives entirely outside of the
+			// workspace (e.g. an --override_module pointing
+			// at an unrelated directory). Don't grant it any
+			// escapement allowance.
+			depth = 0
+		}
+		moduleDepths[moduleName] = depth
+	}
+
 	// Construct Merkle trees for all modules that need to be
 	// uploaded to storage.
 	logger.Info(formatted.Text("Scanning module sources"))
@@ -331,6 +390,22 @@ func PerformBuild(
 			if err != nil {
 				return util.StatusWrapf(err, "Failed to open root directory of module %#v", moduleName.String())
 			}
+
+			modulePathStr, err := ResolveToAbsoluteString(modulePath)
+			if err != nil {
+				moduleRootDirectory.Close()
+				return util.StatusWrapf(err, "Failed to resolve module %#v path", moduleName.String())
+			}
+			exclusions, err := NewSourceExclusions(
+				logger, moduleRootDirectory, moduleName.String(), modulePathStr,
+				moduleName == rootModuleName, workspaceBaseName,
+				commonFlags.RespectGitignore, moduleName == rootModuleName && commonFlags.RequireGitignore,
+			)
+			if err != nil {
+				moduleRootDirectory.Close()
+				return err
+			}
+
 			moduleRootDirectories = append(moduleRootDirectories, localCapturedDirectory{
 				DirectoryCloser: moduleRootDirectory,
 			})
@@ -344,6 +419,7 @@ func PerformBuild(
 					options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
 						fileParameters: fileParameters,
 						capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
+						exclusions:     exclusions,
 					},
 				},
 				model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
@@ -399,15 +475,48 @@ func PerformBuild(
 	}
 	if len(commonFlags.Registry) > 0 {
 		buildSpecification.ModuleRegistryUrls = commonFlags.Registry
+	} else if commonFlags.StrictModuleResolution {
+		// Leave the registry list empty so unresolved modules fail locally.
 	} else {
+		logger.Info(formatted.Text("No --registry specified; falling back to https://bcr.bazel.build/ for any module not supplied locally. Pass --strict_module_resolution to fail instead of fetching from a registry."))
 		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
 	}
 	buildSpecificationPatcher := model_core.NewReferenceMessagePatcher[dag.ObjectContentsWalker]()
 
 	for i, moduleName := range moduleNames {
 		createdRootDirectory := createdModuleRootDirectories[i]
-		if l := createdRootDirectory.MaximumSymlinkEscapementLevels; l == nil || l.Value != 0 {
-			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links that potentially escape the module's root directory", moduleName.String()))
+		switch l := createdRootDirectory.MaximumSymlinkEscapementLevels; {
+		case l == nil:
+			// The module contains a symbolic link whose target
+			// is an absolute path, or contains ".." components
+			// following named components (e.g. "a/../../b").
+			// Neither case has a bound on how far outside of
+			// the module -- or the workspace -- the link may
+			// point, so there's no workspace-relative allowance
+			// that could make this safe. This is always fatal.
+			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links whose target cannot be bounded (e.g. an absolute path, or \"..\" following a named path component)", moduleName.String()))
+		case l.Value > uint32(moduleDepths[moduleName]):
+			// The link climbs higher than the module's own
+			// depth below the workspace root, so even in the
+			// best case it escapes the workspace entirely (e.g.
+			// into $HOME, /tmp, or a package manager's store).
+			// Uploading it would make the build depend on
+			// whatever happens to live at that location on this
+			// particular machine, so this remains fatal.
+			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links that escape the workspace directory", moduleName.String()))
+		case l.Value != 0:
+			// The link escapes the module's own root directory,
+			// but by no more levels than the module is nested
+			// below the workspace root, so it necessarily
+			// resolves to somewhere else inside the workspace
+			// (e.g. Bazel's vendor mode places ".bazelversion ->
+			// ../.bazelversion" inside every vendored module).
+			// That's a normal, portable, and reproducible
+			// symlink, so it only warrants a warning: the
+			// original module-relative check that treated this
+			// as fatal was stricter than the actual risk it was
+			// guarding against.
+			logger.Warning(formatted.Textf("Module %#v contains one or more symbolic links that escape its own root directory, but remain within the workspace", moduleName.String()))
 		}
 		createdObject, err := model_core.MarshalAndEncodeDeterministic(
 			model_core.ProtoToBinaryMarshaler(createdModuleRootDirectories[i].Message),
