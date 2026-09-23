@@ -34,7 +34,6 @@ var enumTypes = map[string][]string{
 		"summary",
 		"errors",
 		"all",
-		"streamed",
 	},
 }
 
@@ -299,8 +298,13 @@ var commands = map[string]command{
 		ancestor: "build",
 		flags: []flag{
 			{
+				longName:    "test_filter",
+				description: "Specifies a filter to forward to the test framework. Used to limit the tests run. Note that this does not affect which targets are built.",
+				flagType:    stringFlagType{},
+			},
+			{
 				longName:    "test_output",
-				description: "Specifies desired output mode. Valid values are 'summary' to output only test status summary, 'errors' to also print test logs for failed tests, 'all' to print logs for all tests and 'streamed' to output logs for all tests in real time (this will force tests to be executed locally one at a time regardless of --test_strategy value).",
+				description: "Specifies desired output mode. Valid values are 'summary' to output only test status summary, 'errors' to also print test logs for failed tests, or 'all' to print logs for all tests.",
 				flagType: enumFlagType{
 					enumType:     "TestOutput",
 					defaultValue: "summary",

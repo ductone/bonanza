@@ -209,12 +209,6 @@ message BuildResult {
     // Apparent patterns of targets that should be built. Repo names are
     // resolved from the perspective of the root module.
     repeated string target_patterns = 2;
-
-    // Whether targets declared by test rules should also be executed
-    // after being built, which is what distinguishes "bazel test" from
-    // "bazel build". Non-test targets matched by the same patterns are
-    // built either way.
-    bool run_tests = 3;
   }
 
   message Value {
@@ -1767,6 +1761,41 @@ message RuleImplementationWrappers {
   message Key {}
 }
 
+// RunTarget resolves the target that "bazel run" was invoked against to
+// the executable it provides and the runfiles that belong to it.
+//
+// TargetCompletion already provides this information, but its key
+// contains a configuration reference that can only be computed by
+// applying transitions, which is something a client cannot do. This
+// function therefore accepts a configuration in the same shape that
+// BuildResult accepts, allowing a client to request it directly.
+message RunTarget {
+  message Key {
+    // The target pattern that needs to be run. The pattern MUST expand
+    // to exactly one target. It may use an apparent repo name.
+    string target_pattern = 1;
+
+    // Platform constraints and build settings that need to be applied.
+    BuildResult.Key.Configuration configuration = 2;
+  }
+
+  message Value {
+    // Path of the executable of the target, relative to the root
+    // directory in BuildResult.Value.
+    string executable_path = 1;
+
+    // A directory hierarchy containing the runfiles of the executable,
+    // named according to DirectoryLayout.RUNFILES. Its contents belong
+    // at "${executable_path}.runfiles".
+    bonanza.model.filesystem.DirectoryContents runfiles_directory = 2;
+
+    // The value of ctx.workspace_name, which is the name of the
+    // directory inside the runfiles directory from which the executable
+    // needs to be launched.
+    string workspace_name = 3;
+  }
+}
+
 message Select {
   message Key {
     // Condition identifiers from which a selection needs to be made.
@@ -1823,6 +1852,32 @@ message SuccessfulActionResult {
   }
 
   message Value {
+    bonanza.model.core.DecodableReference outputs_reference = 2
+        [(bonanza.model.core.object_format) = {
+          proto_list_type_name:
+            "bonanza.model.command.Outputs";
+        }];
+  }
+}
+
+// CompletedActionResult is the counterpart of SuccessfulActionResult for
+// actions whose exit code is part of the outcome instead of a failure.
+// SuccessfulActionResult turns a non-zero exit code into an evaluation
+// error, which is what build actions and repository rules want: the
+// build cannot continue without the outputs. Test actions are the
+// exception. A failing test is a result the user asked for, and one that
+// must be cacheable so that repeated invocations do not re-run tests
+// whose inputs did not change.
+message CompletedActionResult {
+  message Key {
+    ExecuteRequest execute_request = 1;
+  }
+
+  message Value {
+    // The exit code of the process that was launched. Any value is
+    // permitted, including non-zero ones.
+    int64 exit_code = 1;
+
     bonanza.model.core.DecodableReference outputs_reference = 2
         [(bonanza.model.core.object_format) = {
           proto_list_type_name:
@@ -1929,8 +1984,21 @@ message TargetCompletion {
   message Value {
     // A directory hierarchy containing the files in the DefaultInfo
     // provider of the target, named according to
-    // DirectoryLayout.INPUT_ROOT.
+    // DirectoryLayout.INPUT_ROOT. If the target provides an executable,
+    // the executable is contained in this hierarchy as well, even if it
+    // is absent from DefaultInfo.files.
     bonanza.model.filesystem.DirectoryContents output_root = 1;
+
+    // Path of the executable in the FilesToRunProvider of the target,
+    // relative to output_root. Left empty if the target does not
+    // provide an executable.
+    string executable_path = 2;
+
+    // A directory hierarchy containing the runfiles of the executable,
+    // named according to DirectoryLayout.RUNFILES. Its contents belong
+    // at "${executable_path}.runfiles", relative to output_root. Left
+    // unset if the target does not provide an executable.
+    bonanza.model.filesystem.DirectoryContents runfiles_directory = 3;
   }
 }
 
@@ -2028,28 +2096,116 @@ message TargetProviders {
   }
 }
 
-message TestResult {
+// TestStatus is the outcome of running a single test target.
+enum TestStatus {
+  // Failed to determine the outcome of the test.
+  TEST_STATUS_UNKNOWN = 0;
+
+  // The test binary terminated with exit code zero.
+  TEST_STATUS_PASSED = 1;
+
+  // The test binary terminated with a non-zero exit code.
+  TEST_STATUS_FAILED = 2;
+}
+
+// TargetTestResult runs the test binary of a single test target and
+// reports its outcome.
+//
+// Test execution deliberately does not live on TargetCompletion, even
+// though both are keyed by a label and a configuration. TargetCompletion
+// is evaluated for every target matched by "bonanza_bazel build", and
+// attaching test execution to it would cause a plain build to run the
+// tests it built. Keeping the two apart preserves the distinction Bazel
+// makes between building a test and running it.
+message TargetTestResult {
   message Key {
-    // The label of the test target that needs to be executed. The label
-    // MUST include a canonical repo name.
+    // The label of the test target that needs to be run. The label MUST
+    // include a canonical repo name, and MUST NOT include a target name
+    // if it matches the last component of the package path.
     string label = 1;
 
     // Platform constraints and build settings that are currently active.
     //
-    // If this reference is not set, the test is run without any platform
-    // constraints and build settings in place.
+    // If this reference is not set, the target is built without any
+    // platform constraints and build settings in place.
     bonanza.model.core.DecodableReference configuration_reference = 2
         [(bonanza.model.core.object_format) = {
           proto_list_type_name:
             "bonanza.model.analysis.BuildSettingOverride";
         }];
+
+    // If non-empty, the value of the TESTBRIDGE_TEST_ONLY environment
+    // variable that is provided to the test binary, which most test
+    // frameworks use to only run a subset of their test cases. This is
+    // part of the key because it alters the action that is executed.
+    string test_filter = 3;
   }
 
-  // Empty, because a test that did not pass is reported as an evaluation
-  // error naming the target, not as a value. That mirrors how "bazel
-  // test" fails the invocation, and it means a passing test's cached
-  // value carries nothing that a later run would need to re-check.
-  message Value {}
+  message Value {
+    // The outcome of the test.
+    TestStatus status = 1;
+
+    // The exit code of the test binary.
+    int64 exit_code = 2;
+
+    // Reference to the outputs of the test action. Its "stdout" and
+    // "stderr" fields hold what the test binary wrote, which is what
+    // Bazel would have stored in test.log.
+    bonanza.model.core.DecodableReference outputs_reference = 3
+        [(bonanza.model.core.object_format) = {
+          proto_type_name:
+            "bonanza.model.command.Outputs";
+        }];
+  }
+}
+
+// TestResult runs the tests matched by a set of target patterns. It is
+// the counterpart of BuildResult for "bonanza_bazel test": clients
+// request both keys, so that every matched target is built and the ones
+// that are tests are also run.
+message TestResult {
+  message Key {
+    // Configurations for which tests should be run.
+    repeated BuildResult.Key.Configuration configurations = 1;
+
+    // Apparent patterns of targets whose tests should be run. Repo names
+    // are resolved from the perspective of the root module.
+    repeated string target_patterns = 2;
+
+    // If non-empty, the value of the TESTBRIDGE_TEST_ONLY environment
+    // variable that is provided to every test binary.
+    string test_filter = 3;
+  }
+
+  message Value {
+    message Test {
+      // The label of the test target that was run.
+      string label = 1;
+
+      // The outcome of the test.
+      TestStatus status = 2;
+
+      // The exit code of the test binary.
+      int64 exit_code = 3;
+
+      // Reference to the outputs of the test action, holding what the
+      // test binary wrote to standard output and standard error.
+      bonanza.model.core.DecodableReference outputs_reference = 4
+          [(bonanza.model.core.object_format) = {
+            proto_type_name:
+              "bonanza.model.command.Outputs";
+          }];
+    }
+
+    // The tests that were run, grouped by the configuration they were
+    // run in. Targets matched by the patterns that are not tests are
+    // absent, and a target matched by more than one pattern appears
+    // once per configuration.
+    //
+    // TODO: Turn this into a B-tree, so that the number of tests that
+    // can be reported is not bounded by the maximum object size.
+    repeated Test tests = 1;
+  }
 }
 
 message ModuleExtension {

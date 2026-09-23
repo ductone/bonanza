@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "run",
+    srcs = ["do_run.go"],
+    importpath = "bonanza.build/pkg/bazelclient/commands/run",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/bazelclient/arguments",
+        "//pkg/bazelclient/commands",
+        "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/model/core",
+        "//pkg/proto/model/analysis",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "run_test",
+    srcs = ["do_run_test.go"],
+    embed = [":run"],
+    deps = ["@com_github_stretchr_testify//require"],
+)

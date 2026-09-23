@@ -188,24 +188,28 @@ transitioned_mode_aspect_reader = rule(
     },
 )
 
-def _shell_test_impl(ctx):
-    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
-    ctx.actions.write(
-        output = exe,
-        content = "#!/bin/sh\n%s\n" % ctx.attr.command,
+# A target that "bonanza_bazel run" can launch. The executable is
+# created with ctx.actions.symlink(), which the builder materializes
+# without running an action, so this target can also be exercised on
+# hosts where no worker is available.
+def _runnable_script_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(
+        output = executable,
+        target_file = ctx.file.src,
         is_executable = True,
     )
-    return [DefaultInfo(executable = exe)]
+    return [DefaultInfo(
+        executable = executable,
+        files = depset([executable]),
+        runfiles = ctx.runfiles(files = ctx.files.data),
+    )]
 
-# A rule declaring test = True, which is what makes "bonanza_bazel test"
-# execute the target rather than merely build it. The command is a
-# parameter so the same rule can produce both a passing and a failing
-# target: a gate that only ever observes passes cannot tell the
-# difference between running tests and ignoring them.
-shell_test = rule(
-    implementation = _shell_test_impl,
+runnable_script = rule(
+    implementation = _runnable_script_impl,
+    executable = True,
     attrs = {
-        "command": attr.string(default = "exit 0"),
+        "data": attr.label_list(allow_files = True),
+        "src": attr.label(allow_single_file = True, mandatory = True),
     },
-    test = True,
 )

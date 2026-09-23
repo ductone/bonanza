@@ -46,7 +46,6 @@
             "Target",
             "TargetCompletion",
             "TargetPatternExpansion",
-            "TestResult",
             "VisibleTarget"
          ]
       },
@@ -121,6 +120,12 @@
             "BuiltinsModuleNames",
             "CompiledBzlFile"
          ]
+      },
+      "CompletedActionResult": {
+         "dependsOn": [
+            "ActionResult"
+         ],
+         "keyContainsReferences": true
       },
       "ConfiguredAspect": {
          "dependsOn": [
@@ -597,6 +602,21 @@
             "type": "*RuleImplementationWrappers"
          }
       },
+      "RunTarget": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetCompletion",
+            "TargetPatternExpansion",
+            "VisibleTarget"
+         ]
+      },
       "Select": {
          "dependsOn": [
             "CanonicalRepoName",
@@ -723,9 +743,11 @@
          ],
          "keyContainsReferences": true
       },
-      "TestResult": {
+      "TargetTestResult": {
          "dependsOn": [
             "ActionEncoderObject",
+            "CompiledBzlFileGlobal",
+            "CompletedActionResult",
             "DirectoryCreationParameters",
             "DirectoryCreationParametersObject",
             "DirectoryReaders",
@@ -733,10 +755,26 @@
             "FileRoot",
             "FilesRoot",
             "ResolvedToolchains",
-            "SuccessfulActionResult",
-            "TargetProvider"
+            "Target",
+            "TargetProvider",
+            "VisibleTarget"
          ],
          "keyContainsReferences": true
+      },
+      "TestResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetPatternExpansion",
+            "TargetTestResult",
+            "VisibleTarget"
+         ]
       },
       "UsedModuleExtension": {
          "dependsOn": [

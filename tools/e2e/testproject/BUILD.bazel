@@ -17,13 +17,14 @@ load(
     ":defs.bzl",
     "attr_transitioned_reader",
     "repo_info",
+    "runnable_script",
     "self_transitioned_reader",
     "setting_reader",
-    "shell_test",
     "transitioned_mode_aspect_reader",
     "verify_native_apis",
 )
 load(":flag_enum.bzl", "flag_enum_probe")
+load(":tests.bzl", "shell_test")
 
 string_flag(
     name = "mode",
@@ -289,6 +290,34 @@ genrule(
           "cat $(location :hello) $(location :repo_info) $(location :transitioned_mode) > $@",
 )
 
+# Tests for "bonanza_bazel test". The test binaries report the
+# environment they were given, so that the log the client prints shows
+# whether TEST_TARGET, TESTBRIDGE_TEST_ONLY and the runfiles directory
+# reached them.
+shell_test(
+    name = "passing_test",
+    data = ["action_edges_template.txt"],
+)
+
+shell_test(
+    name = "failing_test",
+    exit_code = 1,
+)
+
+shell_test(
+    name = "filtered_test",
+    expected_filter = "OnlyThis",
+)
+
+# Exercises "bonanza_bazel run": the executable is a symlink that the
+# builder materializes on its own, and the runfiles consist of a source
+# file, so launching this target needs no worker.
+runnable_script(
+    name = "runnable",
+    src = "runnable.sh",
+    data = ["runnable_data.txt"],
+)
+
 # Source files reach the client's output tree too, which lets the
 # materialization of source files be exercised alongside output files.
 filegroup(
@@ -310,6 +339,7 @@ filegroup(
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":runnable",
         ":self_transitioned",
         ":sources",
         ":toolchain_probe",
@@ -317,22 +347,4 @@ filegroup(
         ":verify",
         ":verify_repo_conformance",
     ],
-)
-
-# Executed by "bonanza_bazel test", not by "bonanza_bazel build". It is
-# deliberately absent from :all, so a plain build of this project stays a
-# build.
-shell_test(
-    name = "passing_test",
-    command = "exit 0",
-)
-
-# The negative half of the gate. tools/e2e/run.sh asserts that testing
-# this target FAILS; without it, a "bazel test" that silently skipped
-# execution would look identical to one that ran everything. Tagged
-# manual so no wildcard picks it up.
-shell_test(
-    name = "failing_test",
-    command = "echo 'this test is supposed to fail' >&2; exit 1",
-    tags = ["manual"],
 )

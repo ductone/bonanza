@@ -8,8 +8,12 @@ import (
 
 	"bonanza.build/pkg/bazelclient/arguments"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
+	commands_clean "bonanza.build/pkg/bazelclient/commands/clean"
+	commands_help "bonanza.build/pkg/bazelclient/commands/help"
 	commands_info "bonanza.build/pkg/bazelclient/commands/info"
 	commands_license "bonanza.build/pkg/bazelclient/commands/license"
+	commands_test "bonanza.build/pkg/bazelclient/commands/test"
+	commands_run "bonanza.build/pkg/bazelclient/commands/run"
 	commands_version "bonanza.build/pkg/bazelclient/commands/version"
 	"bonanza.build/pkg/bazelclient/formatted"
 	"bonanza.build/pkg/bazelclient/logging"
@@ -70,14 +74,18 @@ func main() {
 	switch typedCmd := cmd.(type) {
 	case *arguments.BuildCommand:
 		commands_build.DoBuild(typedCmd, workspacePath)
+	case *arguments.CleanCommand:
+		commands_clean.DoClean(typedCmd)
 	case *arguments.HelpCommand:
-		panic("HELP")
+		commands_help.DoHelp(typedCmd)
 	case *arguments.InfoCommand:
 		commands_info.DoInfo(typedCmd, workspacePath)
 	case *arguments.LicenseCommand:
 		commands_license.DoLicense()
 	case *arguments.TestCommand:
-		commands_build.DoTest(typedCmd, workspacePath)
+		commands_test.DoTest(typedCmd, workspacePath)
+	case *arguments.RunCommand:
+		commands_run.DoRun(typedCmd, workspacePath)
 	case *arguments.VersionCommand:
 		commands_version.DoVersion(typedCmd)
 	default:
