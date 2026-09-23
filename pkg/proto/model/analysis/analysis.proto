@@ -209,6 +209,12 @@ message BuildResult {
     // Apparent patterns of targets that should be built. Repo names are
     // resolved from the perspective of the root module.
     repeated string target_patterns = 2;
+
+    // Whether targets declared by test rules should also be executed
+    // after being built, which is what distinguishes "bazel test" from
+    // "bazel build". Non-test targets matched by the same patterns are
+    // built either way.
+    bool run_tests = 3;
   }
 
   message Value {}
@@ -1999,6 +2005,30 @@ message TargetProviders {
     // sorted alphabetically by provider identifier.
     repeated bonanza.model.starlark.Struct provider_instances = 1;
   }
+}
+
+message TestResult {
+  message Key {
+    // The label of the test target that needs to be executed. The label
+    // MUST include a canonical repo name.
+    string label = 1;
+
+    // Platform constraints and build settings that are currently active.
+    //
+    // If this reference is not set, the test is run without any platform
+    // constraints and build settings in place.
+    bonanza.model.core.DecodableReference configuration_reference = 2
+        [(bonanza.model.core.object_format) = {
+          proto_list_type_name:
+            "bonanza.model.analysis.BuildSettingOverride";
+        }];
+  }
+
+  // Empty, because a test that did not pass is reported as an evaluation
+  // error naming the target, not as a value. That mirrors how "bazel
+  // test" fails the invocation, and it means a passing test's cached
+  // value carries nothing that a later run would need to re-check.
+  message Value {}
 }
 
 message ModuleExtension {

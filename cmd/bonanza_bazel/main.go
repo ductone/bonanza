@@ -76,6 +76,8 @@ func main() {
 		commands_info.DoInfo(typedCmd, workspacePath)
 	case *arguments.LicenseCommand:
 		commands_license.DoLicense()
+	case *arguments.TestCommand:
+		commands_build.DoTest(typedCmd, workspacePath)
 	case *arguments.VersionCommand:
 		commands_version.DoVersion(typedCmd)
 	default:

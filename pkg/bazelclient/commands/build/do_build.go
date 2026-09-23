@@ -163,9 +163,39 @@ func (f *localCapturableFile[TFile]) Discard() {
 
 // DoBuild implements the "bazel build" command, which builds a
 // specified set of targets in the current workspace.
+// DoBuild builds the targets matched by the command's patterns.
 func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
+	doBuild(
+		&arguments.TestCommand{
+			BuildFlags:            args.BuildFlags,
+			CommonFlags:           args.CommonFlags,
+			Arguments:             args.Arguments,
+			BuildSettingOverrides: args.BuildSettingOverrides,
+		},
+		workspacePath,
+		/* runTests = */ false,
+	)
+}
+
+// DoTest builds the targets matched by the command's patterns, and
+// additionally runs whichever of them are declared by a test rule.
+//
+// It shares an implementation with DoBuild because the two differ in
+// exactly one bit, which is carried to the cluster on the build request
+// rather than acted on here: the client does not know which of the
+// matched targets are tests, since that is only known once their rules
+// have been loaded.
+func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
+	doBuild(args, workspacePath /* runTests = */, true)
+}
+
+func doBuild(args *arguments.TestCommand, workspacePath path.Parser, runTests bool) {
+	commandName := "build"
+	if runTests {
+		commandName = "test"
+	}
 	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
-	commands.ValidateInsideWorkspace(logger, "build", workspacePath)
+	commands.ValidateInsideWorkspace(logger, commandName, workspacePath)
 
 	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache, &args.CommonFlags)
 	if err != nil {
@@ -529,6 +559,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		&model_analysis_pb.BuildResult_Key{
 			TargetPatterns: targetPatterns,
 			Configurations: configurations,
+			RunTests:       runTests,
 		},
 	)
 	buildResultKey, _ := patchedBuildResultKey.SortAndSetReferences()

@@ -44,6 +44,7 @@
             "Target",
             "TargetCompletion",
             "TargetPatternExpansion",
+            "TestResult",
             "VisibleTarget"
          ]
       },
@@ -714,6 +715,21 @@
       "TargetProviders": {
          "dependsOn": [
             "ConfiguredTarget"
+         ],
+         "keyContainsReferences": true
+      },
+      "TestResult": {
+         "dependsOn": [
+            "ActionEncoderObject",
+            "DirectoryCreationParameters",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
+            "FileCreationParameters",
+            "FileRoot",
+            "FilesRoot",
+            "ResolvedToolchains",
+            "SuccessfulActionResult",
+            "TargetProvider"
          ],
          "keyContainsReferences": true
       },

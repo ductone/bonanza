@@ -189,4 +189,21 @@ build || die "warm bonanza_bazel build failed"
 t1=$(date +%s)
 log "warm build succeeded in $((t1 - t0))s"
 
+# --- run the tests -------------------------------------------------------
+# Both directions are checked. A "test" that builds its targets and skips
+# execution would pass the first assertion and fail the second, which is
+# the failure mode worth catching.
+test_target() {
+  (cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza "$1")
+}
+log "running //:passing_test with bonanza_bazel test"
+test_target //:passing_test || die "bonanza_bazel test of a passing test failed"
+log "passing test passed"
+
+log "running //:failing_test with bonanza_bazel test (expected to fail)"
+if test_target //:failing_test 2> "$RUN_DIR/failing_test_stderr.log"; then
+  die "bonanza_bazel test of a failing test unexpectedly succeeded"
+fi
+log "failing test failed, as expected"
+
 log "PASSED"
