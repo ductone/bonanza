@@ -57,48 +57,6 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 		return PatchedTargetActionInputRootValue[TMetadata]{}, errors.New("action definition missing")
 	}
 
-	configurationReference := model_core.Nested(id, id.Message.ConfigurationReference)
-	return c.buildActionInputRoot(
-		ctx,
-		e,
-		targetLabel,
-		configurationReference,
-		model_core.Nested(action, actionDefinition),
-		directoryCreationParameters,
-		directoryReaders,
-	)
-}
-
-// buildActionInputRootEnvironment is the subset of the evaluation
-// environment buildActionInputRoot needs. It is narrower than any single
-// generated environment so that callers other than the
-// TargetActionInputRoot function -- currently TestResult, which
-// synthesizes its action definition rather than reading one back from a
-// configured target -- can supply it.
-type buildActionInputRootEnvironment[TReference any, TMetadata model_core.ReferenceMetadata] interface {
-	addFilesToChangeTrackingDirectoryEnvironment[TReference, TMetadata]
-	model_core.CreatedObjectCapturer[TMetadata]
-}
-
-// buildActionInputRoot materializes the input root of an action: the
-// package's output directory, the action's inputs, and for each of its
-// tools the executable plus a populated runfiles directory beside it.
-//
-// It takes the action definition as an argument rather than the
-// identifier of a declared action, because a test execution has no
-// declared action to name. Running a test is not modelled as one:
-// target.actions is exposed to aspects, so an action synthesized at
-// analysis time to run a test would change what every aspect observes
-// about the target.
-func (c *baseComputer[TReference, TMetadata]) buildActionInputRoot(
-	ctx context.Context,
-	e buildActionInputRootEnvironment[TReference, TMetadata],
-	targetLabel label.CanonicalLabel,
-	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
-	actionDefinition model_core.Message[*model_analysis_pb.TargetActionDefinition, TReference],
-	directoryCreationParameters *model_filesystem.DirectoryCreationParameters,
-	directoryReaders *DirectoryReaders[TReference],
-) (PatchedTargetActionInputRootValue[TMetadata], error) {
 	var rootDirectory changeTrackingDirectory[TReference, TMetadata]
 	loadOptions := &changeTrackingDirectoryLoadOptions[TReference]{
 		context:                 ctx,
@@ -109,7 +67,7 @@ func (c *baseComputer[TReference, TMetadata]) buildActionInputRoot(
 	// Add empty directories for the output directory of the current
 	// package and configuration.
 	components, err := getPackageOutputDirectoryComponents(
-		configurationReference,
+		model_core.Nested(id, id.Message.ConfigurationReference),
 		targetLabel.GetCanonicalPackage(),
 		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
 	)
@@ -123,12 +81,12 @@ func (c *baseComputer[TReference, TMetadata]) buildActionInputRoot(
 			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to create directory %#v: %w", component.String(), err)
 		}
 	}
-	outputDirectory.unmodifiedDirectory = model_core.Nested(actionDefinition, actionDefinition.Message.InitialOutputDirectory)
+	outputDirectory.unmodifiedDirectory = model_core.Nested(action, actionDefinition.InitialOutputDirectory)
 
 	// Add input files.
 	if err := addFilesToChangeTrackingDirectory(
 		e,
-		model_core.Nested(actionDefinition, actionDefinition.Message.Inputs),
+		model_core.Nested(action, actionDefinition.Inputs),
 		&rootDirectory,
 		loadOptions,
 		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
@@ -141,7 +99,7 @@ func (c *baseComputer[TReference, TMetadata]) buildActionInputRoot(
 	for tool := range btree.AllLeaves(
 		ctx,
 		c.filesToRunProviderReader,
-		model_core.Nested(actionDefinition, actionDefinition.Message.Tools),
+		model_core.Nested(action, actionDefinition.Tools),
 		func(element model_core.Message[*model_analysis_pb.FilesToRunProvider, TReference]) (*model_core_pb.DecodableReference, error) {
 			return element.Message.GetParent().GetReference(), nil
 		},
