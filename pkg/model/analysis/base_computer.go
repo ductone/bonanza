@@ -412,6 +412,34 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 				if !targetCompletionValue.IsSet() {
 					missingDependencies = true
 				}
+
+				// "bazel test" additionally runs whichever of
+				// the matched targets are declared by a test
+				// rule. Non-test targets matched by the same
+				// pattern are only built, exactly as they
+				// would be by "bazel build".
+				if key.RunTests {
+					isTest, err := targetIsTest[TReference, TMetadata](e, visibleTargetValue.Message.Label)
+					if err != nil {
+						if !errors.Is(err, evaluation.ErrMissingDependency) {
+							iterErr = err
+							break
+						}
+						missingDependencies = true
+					} else if isTest {
+						testResultValue := e.GetTestResultValue(
+							model_core.MustBuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_analysis_pb.TestResult_Key {
+								return &model_analysis_pb.TestResult_Key{
+									Label:                  visibleTargetValue.Message.Label,
+									ConfigurationReference: model_core.Patch(e, clonedConfigurationReference).Merge(patcher),
+								}
+							}),
+						)
+						if !testResultValue.IsSet() {
+							missingDependencies = true
+						}
+					}
+				}
 			}
 			if iterErr != nil {
 				if !errors.Is(iterErr, evaluation.ErrMissingDependency) {
@@ -426,6 +454,49 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 	}
 
 	return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.BuildResult_Value{}), nil
+}
+
+// targetIsTest reports whether a target is declared by a test rule. It is
+// what separates "bazel test" from "bazel build": only these targets are
+// executed once built.
+//
+// A rule target names its rule by identifier, except for the anonymous
+// rules testing.analysis_test() synthesizes, which carry their definition
+// inline. Anything that is not a rule target at all -- a source file, an
+// alias, a package group -- is not a test.
+func targetIsTest[TReference any, TMetadata model_core.ReferenceMetadata](
+	e interface {
+		GetTargetValue(key *model_analysis_pb.Target_Key) model_core.Message[*model_analysis_pb.Target_Value, TReference]
+		GetCompiledBzlFileGlobalValue(key *model_analysis_pb.CompiledBzlFileGlobal_Key) model_core.Message[*model_analysis_pb.CompiledBzlFileGlobal_Value, TReference]
+	},
+	targetLabel string,
+) (bool, error) {
+	targetValue := e.GetTargetValue(&model_analysis_pb.Target_Key{Label: targetLabel})
+	if !targetValue.IsSet() {
+		return false, evaluation.ErrMissingDependency
+	}
+	ruleTarget, ok := targetValue.Message.Definition.GetKind().(*model_starlark_pb.Target_Definition_RuleTarget)
+	if !ok {
+		return false, nil
+	}
+	if ruleIdentifier := ruleTarget.RuleTarget.RuleIdentifier; ruleIdentifier != "" {
+		ruleValue := e.GetCompiledBzlFileGlobalValue(&model_analysis_pb.CompiledBzlFileGlobal_Key{
+			Identifier: ruleIdentifier,
+		})
+		if !ruleValue.IsSet() {
+			return false, evaluation.ErrMissingDependency
+		}
+		v, ok := ruleValue.Message.Global.GetKind().(*model_starlark_pb.Value_Rule)
+		if !ok {
+			return false, fmt.Errorf("%#v is not a rule", ruleIdentifier)
+		}
+		d, ok := v.Rule.Kind.(*model_starlark_pb.Rule_Definition_)
+		if !ok {
+			return false, fmt.Errorf("%#v is not a rule definition", ruleIdentifier)
+		}
+		return d.Definition.GetTest(), nil
+	}
+	return ruleTarget.RuleTarget.GetRuleDefinition().GetTest(), nil
 }
 
 func (baseComputer[TReference, TMetadata]) ComputeBuiltinsModuleNamesValue(ctx context.Context, key *model_analysis_pb.BuiltinsModuleNames_Key, e BuiltinsModuleNamesEnvironment[TReference, TMetadata]) (PatchedBuiltinsModuleNamesValue[TMetadata], error) {

@@ -107,8 +107,17 @@ What Bonanza still cannot do is give you your build outputs.
 `bonanza_bazel build` verifies that a build succeeds and prints a link
 into `bonanza_browser`; `BuildResult.Value` carries no output set, and
 the client has no artifact materialization. The client implements
-`build`, `info`, `license` and `version`. There is no `test`, `run`,
+`build`, `test`, `info`, `license` and `version`. There is no `run`,
 `query` or `cquery` command, and no Build Event Protocol.
+
+`test` builds the targets its patterns match and additionally executes
+whichever of them are declared by a test rule, failing the invocation
+when one exits non-zero. It reports no per-test output: there is no
+test.log, no test.xml, no summary, and `--test_output` is accepted but
+ignored, all of which need artifact materialization above. A test
+carrying `exec_compatible_with` is not yet honoured either -- the test
+action resolves its execution platform the way a target with an empty
+exec group does.
 
 ## Differences from upstream
 
@@ -124,6 +133,14 @@ enforced: an aspect that fails to return one errors out, and duplicate
 providers are rejected. Aspects are applied to configured targets
 through a first-class analysis key, and toolchains declared on an
 aspect become its default exec group, mirroring how rules behave.
+
+**Test execution.** `bonanza_bazel test` and the `TestResult` analysis
+function behind it. A test is run as an action synthesized from the
+target's `DefaultInfo.files_to_run` -- its executable, with a runfiles
+directory populated beside it -- rather than as an action declared on the
+configured target: `target.actions` is exposed to aspects, so an action
+that exists only because someone ran `test` would change what every
+aspect observes about the target.
 
 **Analysis-time testing.** `testing.analysis_test()`,
 `rule(analysis_test = True)`, `analysis_test_transition()` and

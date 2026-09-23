@@ -187,3 +187,25 @@ transitioned_mode_aspect_reader = rule(
         "dep": attr.label(aspects = [transitioned_mode_aspect]),
     },
 )
+
+def _shell_test_impl(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(
+        output = exe,
+        content = "#!/bin/sh\n%s\n" % ctx.attr.command,
+        is_executable = True,
+    )
+    return [DefaultInfo(executable = exe)]
+
+# A rule declaring test = True, which is what makes "bonanza_bazel test"
+# execute the target rather than merely build it. The command is a
+# parameter so the same rule can produce both a passing and a failing
+# target: a gate that only ever observes passes cannot tell the
+# difference between running tests and ignoring them.
+shell_test = rule(
+    implementation = _shell_test_impl,
+    attrs = {
+        "command": attr.string(default = "exit 0"),
+    },
+    test = True,
+)

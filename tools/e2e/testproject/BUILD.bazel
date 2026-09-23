@@ -19,6 +19,7 @@ load(
     "repo_info",
     "self_transitioned_reader",
     "setting_reader",
+    "shell_test",
     "transitioned_mode_aspect_reader",
     "verify_native_apis",
 )
@@ -308,4 +309,22 @@ filegroup(
         ":verify",
         ":verify_repo_conformance",
     ],
+)
+
+# Executed by "bonanza_bazel test", not by "bonanza_bazel build". It is
+# deliberately absent from :all, so a plain build of this project stays a
+# build.
+shell_test(
+    name = "passing_test",
+    command = "exit 0",
+)
+
+# The negative half of the gate. tools/e2e/run.sh asserts that testing
+# this target FAILS; without it, a "bazel test" that silently skipped
+# execution would look identical to one that ran everything. Tagged
+# manual so no wildcard picks it up.
+shell_test(
+    name = "failing_test",
+    command = "echo 'this test is supposed to fail' >&2; exit 1",
+    tags = ["manual"],
 )
