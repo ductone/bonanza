@@ -103,12 +103,14 @@ measured at scale. `tools/e2e/run.sh` performs a cold build followed by
 a warm one and reports the elapsed time of each; it does not assert a
 hit rate.
 
-What Bonanza still cannot do is give you your build outputs.
-`bonanza_bazel build` verifies that a build succeeds and prints a link
-into `bonanza_browser`; `BuildResult.Value` carries no output set, and
-the client has no artifact materialization. The client implements
-`build`, `test`, `info`, `license` and `version`. There is no `run`,
-`query` or `cquery` command, and no Build Event Protocol.
+`bonanza_bazel build` materializes target outputs beneath `bonanza-out`
+and creates a `bonanza-bin` convenience link for a single configuration.
+The client also implements `test`, `run`, and loading-phase `query`
+(including `deps`, `rdeps`, `kind`, `filter`, and `attr`). Build and test
+accept `--target_pattern_file`. It does not implement `cquery`, the
+Build Event Protocol, or Bazel's canonical-repository `--vendor_dir`
+semantics. A Bonanza scheduler and storage frontend are separate services;
+Buildbarn REv2 cache and executor endpoints cannot replace them.
 
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test
@@ -124,9 +126,9 @@ the way a target with an empty exec group does.
 ## Differences from upstream
 
 This fork tracks [buildbarn/bonanza](https://github.com/buildbarn/bonanza)
-and adds the following. All of it is loading- and analysis-phase work:
-none of it makes the client able to run a test, resolve a query or
-launch a binary, because those commands do not exist yet.
+and adds the following. Client output materialization, test execution,
+run, and query are supported; the command-line feature set remains
+smaller than Bazel's.
 
 **Aspects.** `aspect()` supports `attrs`, `toolchains`,
 `required_providers`, `required_aspect_providers`, `provides`,
