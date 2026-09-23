@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "do_build.go",
         "local_path_extracting_module_dot_bazel_handler.go",
+        "path_utils.go",
+        "source_exclusions.go",
     ],
     importpath = "bonanza.build/pkg/bazelclient/commands/build",
     visibility = ["//visibility:public"],
