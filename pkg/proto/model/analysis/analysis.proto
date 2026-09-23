@@ -1761,6 +1761,41 @@ message RuleImplementationWrappers {
   message Key {}
 }
 
+// RunTarget resolves the target that "bazel run" was invoked against to
+// the executable it provides and the runfiles that belong to it.
+//
+// TargetCompletion already provides this information, but its key
+// contains a configuration reference that can only be computed by
+// applying transitions, which is something a client cannot do. This
+// function therefore accepts a configuration in the same shape that
+// BuildResult accepts, allowing a client to request it directly.
+message RunTarget {
+  message Key {
+    // The target pattern that needs to be run. The pattern MUST expand
+    // to exactly one target. It may use an apparent repo name.
+    string target_pattern = 1;
+
+    // Platform constraints and build settings that need to be applied.
+    BuildResult.Key.Configuration configuration = 2;
+  }
+
+  message Value {
+    // Path of the executable of the target, relative to the root
+    // directory in BuildResult.Value.
+    string executable_path = 1;
+
+    // A directory hierarchy containing the runfiles of the executable,
+    // named according to DirectoryLayout.RUNFILES. Its contents belong
+    // at "${executable_path}.runfiles".
+    bonanza.model.filesystem.DirectoryContents runfiles_directory = 2;
+
+    // The value of ctx.workspace_name, which is the name of the
+    // directory inside the runfiles directory from which the executable
+    // needs to be launched.
+    string workspace_name = 3;
+  }
+}
+
 message Select {
   message Key {
     // Condition identifiers from which a selection needs to be made.
@@ -1949,8 +1984,21 @@ message TargetCompletion {
   message Value {
     // A directory hierarchy containing the files in the DefaultInfo
     // provider of the target, named according to
-    // DirectoryLayout.INPUT_ROOT.
+    // DirectoryLayout.INPUT_ROOT. If the target provides an executable,
+    // the executable is contained in this hierarchy as well, even if it
+    // is absent from DefaultInfo.files.
     bonanza.model.filesystem.DirectoryContents output_root = 1;
+
+    // Path of the executable in the FilesToRunProvider of the target,
+    // relative to output_root. Left empty if the target does not
+    // provide an executable.
+    string executable_path = 2;
+
+    // A directory hierarchy containing the runfiles of the executable,
+    // named according to DirectoryLayout.RUNFILES. Its contents belong
+    // at "${executable_path}.runfiles", relative to output_root. Left
+    // unset if the target does not provide an executable.
+    bonanza.model.filesystem.DirectoryContents runfiles_directory = 3;
   }
 }
 

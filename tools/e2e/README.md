@@ -36,7 +36,11 @@ Notes:
   access to it fail with `fusermount3: failed to open /dev/fuse:
   Operation not permitted` and the worker exits. Analysis-only targets
   (source files, `ctx.actions.symlink()` outputs) still build without a
-  worker, but anything that runs a command does not.
+  worker, but anything that runs a command does not. `//:runnable` is
+  deliberately built with `ctx.actions.symlink()`, so `bonanza_bazel run`
+  can be exercised on such hosts by pointing `--platforms` at
+  `//platforms:exec`, which avoids `@platforms//host` whose repo rule
+  needs a worker.
 - The demo deployment binds fixed TCP diagnostics ports (9980-9984), so
   only one cluster can run on a host at a time.
 - Module dependencies of the test project are provided as local
