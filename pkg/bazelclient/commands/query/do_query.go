@@ -664,6 +664,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 			&model_analysis_pb.BuildSpecification_Value_VendoredRepo{
 				CanonicalRepo:          vendoredRepo.CanonicalRepo.String(),
 				RootDirectoryReference: rootDirectoryReference,
+				Pinned:                 vendoredRepo.Pinned,
 			},
 		)
 	}

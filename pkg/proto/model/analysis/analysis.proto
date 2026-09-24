@@ -103,6 +103,10 @@ message BuildSpecification {
       string canonical_repo = 1;
 
       bonanza.model.filesystem.DirectoryReference root_directory_reference = 2;
+
+      // VENDOR.bazel pin() overrides normal local/module repository
+      // resolution for this canonical repository.
+      bool pinned = 3;
     }
 
     // A registry snapshot captured from _registries in a Bazel --vendor_dir.

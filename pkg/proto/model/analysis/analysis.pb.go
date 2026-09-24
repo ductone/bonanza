@@ -5270,6 +5270,7 @@ type BuildSpecification_Value_VendoredRepo struct {
 	state                  protoimpl.MessageState         `protogen:"open.v1"`
 	CanonicalRepo          string                         `protobuf:"bytes,1,opt,name=canonical_repo,json=canonicalRepo,proto3" json:"canonical_repo,omitempty"`
 	RootDirectoryReference *filesystem.DirectoryReference `protobuf:"bytes,2,opt,name=root_directory_reference,json=rootDirectoryReference,proto3" json:"root_directory_reference,omitempty"`
+	Pinned                 bool                           `protobuf:"varint,3,opt,name=pinned,proto3" json:"pinned,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -5316,6 +5317,13 @@ func (x *BuildSpecification_Value_VendoredRepo) GetRootDirectoryReference() *fil
 		return x.RootDirectoryReference
 	}
 	return nil
+}
+
+func (x *BuildSpecification_Value_VendoredRepo) GetPinned() bool {
+	if x != nil {
+		return x.Pinned
+	}
+	return false
 }
 
 type BuildSpecification_Value_VendoredRegistry struct {
@@ -15676,9 +15684,9 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x0fexecute_request\x18\x01 \x01(\v2&.bonanza.model.analysis.ExecuteRequestR\x0eexecuteRequest\x1a\x9e\x01\n" +
 	"\x05Value\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x03R\bexitCode\x12x\n" +
-	"\x11outputs_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xde\x12\n" +
+	"\x11outputs_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xf6\x12\n" +
 	"\x12BuildSpecification\x1a\x05\n" +
-	"\x03Key\x1a\xc0\x12\n" +
+	"\x03Key\x1a\xd8\x12\n" +
 	"\x05Value\x12Q\n" +
 	"\amodules\x18\x01 \x03(\v27.bonanza.model.analysis.BuildSpecification.Value.ModuleR\amodules\x12(\n" +
 	"\x10root_module_name\x18\x02 \x01(\tR\x0erootModuleName\x12y\n" +
@@ -15707,10 +15715,11 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x18root_directory_reference\x18\x02 \x01(\v2,.bonanza.model.filesystem.DirectoryReferenceR\x16rootDirectoryReference\x1at\n" +
 	"\vUseLockfile\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\bR\x05error\x12O\n" +
-	"\x16maximum_cache_duration\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x14maximumCacheDuration\x1a\x9d\x01\n" +
+	"\x16maximum_cache_duration\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x14maximumCacheDuration\x1a\xb5\x01\n" +
 	"\fVendoredRepo\x12%\n" +
 	"\x0ecanonical_repo\x18\x01 \x01(\tR\rcanonicalRepo\x12f\n" +
-	"\x18root_directory_reference\x18\x02 \x01(\v2,.bonanza.model.filesystem.DirectoryReferenceR\x16rootDirectoryReference\x1a\x9e\x02\n" +
+	"\x18root_directory_reference\x18\x02 \x01(\v2,.bonanza.model.filesystem.DirectoryReferenceR\x16rootDirectoryReference\x12\x16\n" +
+	"\x06pinned\x18\x03 \x01(\bR\x06pinned\x1a\x9e\x02\n" +
 	"\x10VendoredRegistry\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12f\n" +
 	"\x18root_directory_reference\x18\x02 \x01(\v2,.bonanza.model.filesystem.DirectoryReferenceR\x16rootDirectoryReference\x12\\\n" +

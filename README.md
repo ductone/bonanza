@@ -141,8 +141,15 @@ image digest/tag parity, or frontend publication against C1 targets.
 `--vendor_dir` uploads Bazel's full canonical repository names and
 lockfile-verified registry metadata. It requires `--lockfile_mode=error`;
 repos absent from the snapshot use their normal repository rules, as in
-Bazel. `--strict_vendor` instead rejects missing repos. Source uploads
-exclude ignored local state and can require Git filtering before upload.
+Bazel. `--strict_vendor` instead rejects missing repositories, including
+`use_repo_rule()` and module-extension repos declared by local modules;
+locally supplied bare module sources remain available unless explicitly
+`pin()`ned in `VENDOR.bazel`. A pin overrides local module sources for
+that canonical repo; `ignore()` removes it from the snapshot, so strict
+mode rejects its use instead of fetching it. Vendored generated repos
+resolve sibling aliases directly from the snapshot without running the
+producing extension. Source uploads exclude ignored local state and can
+require Git filtering before upload.
 
 Client-side `flag_alias` declarations in the root or vendored
 `MODULE.bazel` resolve named build-setting flags for build, test, run,
