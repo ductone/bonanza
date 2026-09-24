@@ -657,3 +657,22 @@ func TestQueryOutputFlagIsScopedToQueryCommands(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "does not apply")
 }
+
+func TestC1EnvironmentFlagsAndConfigExpansion(t *testing.T) {
+	cmd, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{
+		"common":    {{"--announce_rc"}},
+		"build":     {{"--action_env=DO_NOT_TRACK=1"}, {"--repo_env=DO_NOT_TRACK=1"}},
+		"common:ci": {{"--color=no"}},
+		"build:ci":  {{"--action_env=DO_NOT_TRACK=2"}},
+	}, []string{"cquery", "--config=ci", "--output=files", "//bazel/python:check.py"})
+	require.NoError(t, err)
+	cquery := cmd.(*arguments.CqueryCommand)
+	require.True(t, cquery.CommonFlags.AnnounceRc)
+	require.Equal(t, []string{"DO_NOT_TRACK=1", "DO_NOT_TRACK=2"}, cquery.BuildFlags.ActionEnv)
+	require.Equal(t, []string{"DO_NOT_TRACK=1"}, cquery.BuildFlags.RepoEnv)
+	require.Equal(t, arguments.Color(arguments.Color_No), cquery.CommonFlags.Color)
+	require.Contains(t, cquery.RCAnnouncements, "build:ci: --action_env=DO_NOT_TRACK=<redacted>")
+	require.NotContains(t, cquery.RCAnnouncements, "build:ci: --action_env=DO_NOT_TRACK=2")
+	require.Contains(t, cquery.RCAnnouncements, "build: --repo_env=DO_NOT_TRACK=<redacted>")
+	require.Contains(t, cquery.RCAnnouncements, "common:ci: --color=no")
+}

@@ -703,6 +703,7 @@
          "dependsOn": [
             "ActionEncoderObject",
             "ActionReaders",
+            "BuildSpecification",
             "BuiltinsModuleNames",
             "CanonicalRepoName",
             "CompiledBzlFileDecodedGlobals",

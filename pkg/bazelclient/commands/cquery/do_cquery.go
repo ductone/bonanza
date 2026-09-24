@@ -5,6 +5,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"bonanza.build/pkg/bazelclient/arguments"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
@@ -20,12 +21,22 @@ import (
 func outputFiles(outputRoot string, targets []*model_analysis_pb.ConfiguredQueryResult_Value_Target) ([]string, error) {
 	files := map[string]struct{}{}
 	for _, target := range targets {
+		if len(target.ExternalSourceFiles) != 0 {
+			return nil, fmt.Errorf("external source %q of target %q has no workspace-local materialization", target.ExternalSourceFiles[0], target.Label)
+		}
 		for _, file := range target.Files {
 			localPath := filepath.FromSlash(file)
-			if !filepath.IsLocal(localPath) {
-				return nil, fmt.Errorf("invalid output path %#v for target %#v", file, target.Label)
+			if !filepath.IsLocal(localPath) || !strings.HasPrefix(file, "bazel-out/") {
+				return nil, fmt.Errorf("no materialized output path for %q of target %q", file, target.Label)
 			}
 			files[filepath.Join(outputRoot, localPath)] = struct{}{}
+		}
+		for _, file := range target.SourceFiles {
+			localPath := filepath.FromSlash(file)
+			if !filepath.IsLocal(localPath) {
+				return nil, fmt.Errorf("invalid source path %q for target %q", file, target.Label)
+			}
+			files[localPath] = struct{}{}
 		}
 	}
 	return slices.Sorted(maps.Keys(files)), nil

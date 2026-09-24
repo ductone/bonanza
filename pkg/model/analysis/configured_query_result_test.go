@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
+	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
 
 	"github.com/stretchr/testify/require"
 )
@@ -25,4 +26,20 @@ func TestConfiguredQueryRejectsLoadingPhaseDependencyWalks(t *testing.T) {
 			Universe: selection, Targets: selection,
 		}},
 	}), "not supported")
+}
+
+func TestConfiguredQueryClassifiesC1SourceAndBinary(t *testing.T) {
+	source := &model_starlark_pb.File{}
+	path, location := classifyConfiguredQueryFile("c1+", "external/c1+/bazel/python/check.py", source)
+	require.Equal(t, configuredQueryRootSource, location)
+	require.Equal(t, "bazel/python/check.py", path)
+
+	generated := &model_starlark_pb.File{Owner: &model_starlark_pb.File_Owner{}}
+	path, location = classifyConfiguredQueryFile("c1+", "bazel-out/config/bin/external/c1+/cmd/example/example", generated)
+	require.Equal(t, configuredQueryGenerated, location)
+	require.Equal(t, "bazel-out/config/bin/external/c1+/cmd/example/example", path)
+
+	path, location = classifyConfiguredQueryFile("c1+", "external/rules_python+/tool.py", source)
+	require.Equal(t, configuredQueryExternalSource, location)
+	require.Equal(t, "external/rules_python+/tool.py", path)
 }
