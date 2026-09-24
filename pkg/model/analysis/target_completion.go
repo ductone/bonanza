@@ -216,18 +216,32 @@ func (c *baseComputer[TReference, TMetadata]) getExecutableAndRunfiles(
 		if err != nil {
 			return "", nil, err
 		}
-		var errIter error
-		for entry := range model_starlark.AllListLeafElements(ctx, c.valueReaders.List, entries, &errIter) {
-			if err := c.addRunfilesSymlink(ctx, e, entry, runfilesDirectory, symlinks.prefix, loadOptions); err != nil {
-				return "", nil, fmt.Errorf("failed to add entry of %#v to runfiles directory: %w", symlinks.fieldName, err)
-			}
-		}
-		if errIter != nil {
-			return "", nil, fmt.Errorf("failed to iterate %#v: %w", symlinks.fieldName, errIter)
+		if err := c.addRunfilesSymlinks(ctx, e, entries, runfilesDirectory, symlinks.prefix, loadOptions); err != nil {
+			return "", nil, fmt.Errorf("failed to add entries of %#v to runfiles directory: %w", symlinks.fieldName, err)
 		}
 	}
 
 	return executablePath, runfilesDirectory, nil
+}
+
+// addRunfilesSymlinks handles both the workspace-relative and root-relative
+// entries of FilesToRunProvider. Tools need the same runfiles tree as targets
+// built for `run`, including entries held in external depset nodes.
+func (c *baseComputer[TReference, TMetadata]) addRunfilesSymlinks(
+	ctx context.Context,
+	e addFilesToChangeTrackingDirectoryEnvironment[TReference, TMetadata],
+	entries model_core.Message[[]*model_starlark_pb.List_Element, TReference],
+	runfilesDirectory *changeTrackingDirectory[TReference, TMetadata],
+	prefix string,
+	loadOptions *changeTrackingDirectoryLoadOptions[TReference],
+) error {
+	var errIter error
+	for entry := range model_starlark.AllListLeafElements(ctx, c.valueReaders.List, entries, &errIter) {
+		if err := c.addRunfilesSymlink(ctx, e, entry, runfilesDirectory, prefix, loadOptions); err != nil {
+			return err
+		}
+	}
+	return errIter
 }
 
 // addRunfilesSymlink adds a single SymlinkEntry contained in a
@@ -236,7 +250,7 @@ func (c *baseComputer[TReference, TMetadata]) getExecutableAndRunfiles(
 // file is first resolved in a directory hierarchy of its own.
 func (c *baseComputer[TReference, TMetadata]) addRunfilesSymlink(
 	ctx context.Context,
-	e TargetCompletionEnvironment[TReference, TMetadata],
+	e addFilesToChangeTrackingDirectoryEnvironment[TReference, TMetadata],
 	entry model_core.Message[*model_starlark_pb.Value, TReference],
 	runfilesDirectory *changeTrackingDirectory[TReference, TMetadata],
 	prefix string,

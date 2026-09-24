@@ -198,6 +198,11 @@ encoding path still lacks it, and `config_feature_flag` always
 resolves to its default value because Bonanza does not model feature
 flag configuration.
 
+**Tool runfiles.** Action input roots include the workspace-relative and
+root-relative entries of a tool's `FilesToRunProvider`, not just its
+runfiles files. JavaScript launchers can therefore read data placed at
+custom runfiles paths when invoked by another rule.
+
 **Cache hardening.** Cache tag keys carry a semantics version, so
 workers implementing different evaluation semantics read and write
 disjoint keys instead of serving each other stale results. Cached

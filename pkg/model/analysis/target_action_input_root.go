@@ -13,6 +13,7 @@ import (
 	model_starlark "bonanza.build/pkg/model/starlark"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
 	model_core_pb "bonanza.build/pkg/proto/model/core"
+	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
 
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/buildbarn/bb-storage/pkg/util"
@@ -146,16 +147,26 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to add runfiles files of tool with path %#v to input root: %w", executablePath, err)
 		}
 
-		// Create a ctx.workspace_name == "_main" directory.
-		// This is needed to make path lookups of the form
-		// "${RUNFILES_DIR}/_main/../${path}" work.
-		runfilesDirectory.getOrCreateDirectory(componentMainWorkspaceName)
-
-		if len(toolLeaf.RunfilesSymlinks) > 0 {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, errors.New("TODO: add runfiles symlinks to the input root")
+		// Keep the tool's declared runfiles at their requested paths, not
+		// merely at the paths implied by their source labels. In particular,
+		// JavaScript launchers and package-manager links use these entries
+		// to resolve files from their runfiles tree.
+		if _, err := runfilesDirectory.getOrCreateDirectory(componentMainWorkspaceName); err != nil {
+			return PatchedTargetActionInputRootValue[TMetadata]{}, err
 		}
-		if len(toolLeaf.RunfilesRootSymlinks) > 0 {
-			return PatchedTargetActionInputRootValue[TMetadata]{}, errors.New("TODO: add runfiles root symlinks to the input root")
+		for _, symlinks := range []struct {
+			entries []*model_starlark_pb.List_Element
+			prefix  string
+		}{
+			{entries: toolLeaf.RunfilesSymlinks, prefix: componentMainWorkspaceName.String() + "/"},
+			{entries: toolLeaf.RunfilesRootSymlinks},
+		} {
+			if err := c.addRunfilesSymlinks(
+				ctx, e, model_core.Nested(tool, symlinks.entries),
+				runfilesDirectory, symlinks.prefix, loadOptions,
+			); err != nil {
+				return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to add runfiles entries of tool with path %#v: %w", executablePath, err)
+			}
 		}
 	}
 	if errIter != nil {
@@ -205,3 +216,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 		}, nil
 	})
 }
+
+// TargetActionInputRootEnvironmentForTesting generates a mock for the
+// action-input tree boundary without requiring an action worker.
+type TargetActionInputRootEnvironmentForTesting TargetActionInputRootEnvironment[model_core.CreatedObjectTree, model_core.CreatedObjectTree]
