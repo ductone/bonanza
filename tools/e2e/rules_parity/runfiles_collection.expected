@@ -1,0 +1,4 @@
+default=MODULE.bazel,data_leaf_data.txt,data_leaf_default.txt,dep_leaf_default.txt,src_leaf_default.txt
+data=MODULE.bazel,data_leaf_data.txt,data_leaf_default.txt,dep_leaf_data.txt,proto_leaf_data.txt,src_leaf_data.txt
+leaf_data=data_leaf_data.txt
+leaf_default=data_leaf_default.txt

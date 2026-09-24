@@ -1,6 +1,7 @@
 load("@bazel_tools//fragments:fragment_info.bzl", "FragmentInfo")
 load(
     "//:exports.bzl",
+    "DefaultInfo",
     "PlatformInfo",
     "SymlinkEntry",
     "TemplateVariableInfo",
@@ -214,10 +215,28 @@ def _wrap_rule_ctx(ctx):
             symlinks = _to_symlink_entry_depset(symlinks),
             root_symlinks = _to_symlink_entry_depset(root_symlinks),
         )
-        if collect_data or collect_default:
-            # TODO: Implement this feature!
-            pass
-        return direct
+        if not collect_data and not collect_default:
+            return direct
+
+        collected = []
+        for attr_name in ["srcs", "deps"]:
+            for target in getattr(ctx.attr, attr_name, []):
+                info = target[DefaultInfo]
+                if collect_data:
+                    collected.append(info.data_runfiles)
+                if collect_default:
+                    collected.append(info.default_runfiles)
+
+        # Bazel always collects both runfiles variants from the data
+        # attribute. Source files (including generated file targets)
+        # have no explicit runfiles but are executable file targets.
+        for target in getattr(ctx.attr, "data", []):
+            info = target[DefaultInfo]
+            collected.extend([info.data_runfiles, info.default_runfiles])
+            executable = info.files_to_run.executable
+            if executable != None:
+                collected.append(runfiles(files = depset([executable])))
+        return direct.merge_all(collected)
 
     ctx_fields = {
         field: getattr(ctx, field)

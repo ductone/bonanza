@@ -1,0 +1,2 @@
+imports=pkg/a:pkg/b
+workspace=_main
