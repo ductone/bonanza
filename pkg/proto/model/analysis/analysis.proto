@@ -230,6 +230,13 @@ message BuildSpecification {
     // worker must never read the client's ambient environment implicitly.
     repeated EnvironmentOverride action_env = 19;
     repeated EnvironmentOverride repo_env = 20;
+
+    // Workspace status contents supplied by the client for stamped actions.
+    // Empty strings represent reusable, unstamped status. These are embedded
+    // in the build specification so actions never read the client's filesystem
+    // or environment after analysis starts.
+    string stable_workspace_status = 21;
+    string volatile_workspace_status = 22;
   }
 }
 
@@ -266,6 +273,11 @@ message BuildResult {
     // Apparent patterns of targets that should be built. Repo names are
     // resolved from the perspective of the root module.
     repeated string target_patterns = 2;
+
+    // Selected output groups for this build. An empty list
+    // means only DefaultInfo.files, for compatibility with existing keys.
+    // The "default" group denotes DefaultInfo.files.
+    repeated string output_groups = 3;
   }
 
   message Value {
@@ -2039,6 +2051,10 @@ message TargetCompletion {
           proto_list_type_name:
             "bonanza.model.analysis.BuildSettingOverride";
         }];
+
+    // Selected output groups, with "default" denoting DefaultInfo.files.
+    // Empty means the default group, preserving existing callers.
+    repeated string output_groups = 3;
   }
 
   message Value {

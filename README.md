@@ -125,6 +125,19 @@ options, including Bazel's server-only `--max_idle_secs`, fail explicitly.
 Bonanza is not yet a drop-in replacement for C1's unmodified `.bazelrc` or
 its Buildbarn endpoint.
 
+Build and test accept `--output_groups` to materialize named
+`OutputGroupInfo` depsets (for example `mtree` or `tarball`) instead of,
+or alongside, default outputs. `run` accepts only
+`--output_groups=default`, since its executable must be materialized.
+`--stamp`/`--nostamp` set the native Starlark stamp option;
+`--embed_label` contributes a stable label to `ctx.info_file`. Stamped
+actions receive status files containing the build label, hostname,
+username, timestamp, and formatted date. Unstamped builds use empty
+status inputs so they do not invalidate the remote analysis graph on
+each invocation. This does not implement custom
+`--workspace_status_command` values or prove Go module metadata, OCI
+image digest/tag parity, or frontend publication against C1 targets.
+
 `--vendor_dir` uploads Bazel's full canonical repository names and
 lockfile-verified registry metadata. It requires `--lockfile_mode=error`;
 repos absent from the snapshot use their normal repository rules, as in

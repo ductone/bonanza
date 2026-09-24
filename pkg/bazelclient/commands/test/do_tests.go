@@ -64,6 +64,7 @@ func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 	buildResultValue, err := commands_build.LookUpValue[model_analysis_pb.BuildResult_Value](o, &model_analysis_pb.BuildResult_Key{
 		TargetPatterns: o.TargetPatterns,
 		Configurations: o.Configurations,
+		OutputGroups:   o.OutputGroups,
 	})
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))

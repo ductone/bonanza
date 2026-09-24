@@ -299,6 +299,7 @@
       },
       "FileRoot": {
          "dependsOn": [
+            "BuildSpecification",
             "DirectoryCreationParametersObject",
             "DirectoryReaders",
             "FileCreationParametersObject",

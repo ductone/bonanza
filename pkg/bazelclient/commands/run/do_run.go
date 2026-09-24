@@ -43,6 +43,9 @@ func DoRun(args *arguments.RunCommand, workspacePath path.Parser) {
 	targetPatternArguments := args.Arguments
 	executableArguments := []string(nil)
 	buildFlags := args.BuildFlags
+	if buildFlags.OutputGroups != "default" {
+		logger.Fatal(formatted.Text("The \"run\" command does not support non-default --output_groups; it requires the executable in the default output group"))
+	}
 	if buildFlags.TargetPatternFile != "" {
 		var err error
 		targetPatternArguments, err = commands_build.ResolveTargetPatterns(args.Arguments, buildFlags.TargetPatternFile)
@@ -87,6 +90,7 @@ func DoRun(args *arguments.RunCommand, workspacePath path.Parser) {
 	buildResultValue, err := commands_build.LookUpValue[model_analysis_pb.BuildResult_Value](o, &model_analysis_pb.BuildResult_Key{
 		TargetPatterns: o.TargetPatterns,
 		Configurations: o.Configurations,
+		OutputGroups:   o.OutputGroups,
 	})
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))

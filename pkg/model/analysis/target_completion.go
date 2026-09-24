@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	model_core "bonanza.build/pkg/model/core"
 	"bonanza.build/pkg/model/evaluation"
@@ -22,54 +23,89 @@ import (
 )
 
 func (c *baseComputer[TReference, TMetadata]) ComputeTargetCompletionValue(ctx context.Context, key model_core.Message[*model_analysis_pb.TargetCompletion_Key, TReference], e TargetCompletionEnvironment[TReference, TMetadata]) (PatchedTargetCompletionValue[TMetadata], error) {
-	// TODO: This should also respect --output_groups.
 	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
 	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
-	defaultInfo, err := getProviderFromConfiguredTarget(
-		e,
-		key.Message.Label,
-		model_core.Patch(e, model_core.Nested(key, key.Message.ConfigurationReference)),
-		defaultInfoProviderIdentifier,
-	)
-	if err != nil {
-		return PatchedTargetCompletionValue[TMetadata]{}, err
-	}
 	if !gotDirectoryCreationParameters || !gotDirectoryReaders {
 		return PatchedTargetCompletionValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
-
-	files, err := model_starlark.GetStructFieldValue(ctx, c.valueReaders.List, defaultInfo, "files")
-	if err != nil {
-		return PatchedTargetCompletionValue[TMetadata]{}, err
-	}
-	filesDepset, ok := files.Message.Kind.(*model_starlark_pb.Value_Depset)
-	if !ok {
-		return PatchedTargetCompletionValue[TMetadata]{}, errors.New("\"files\" field of DefaultInfo provider is not a depset")
-	}
-
 	loadOptions := &changeTrackingDirectoryLoadOptions[TReference]{
 		context:                 ctx,
 		directoryContentsReader: directoryReaders.DirectoryContents,
 		leavesReader:            directoryReaders.Leaves,
 	}
 	var rootDirectory changeTrackingDirectory[TReference, TMetadata]
-	if err := addFilesToChangeTrackingDirectory(
-		e,
-		model_core.Nested(files, filesDepset.Depset.Elements),
-		&rootDirectory,
-		loadOptions,
-		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
-	); err != nil {
-		return PatchedTargetCompletionValue[TMetadata]{}, err
+	var defaultInfo model_core.Message[*model_starlark_pb.Struct_Fields, TReference]
+	var outputGroupInfo model_core.Message[*model_analysis_pb.TargetProvider_Value, TReference]
+	outputGroupInfoLoaded := false
+	groups := key.Message.OutputGroups
+	if len(groups) == 0 {
+		groups = []string{"default"}
+	}
+	for _, groupName := range groups {
+		var fields model_core.Message[*model_starlark_pb.Struct_Fields, TReference]
+		if groupName == "default" {
+			var err error
+			defaultInfo, err = getProviderFromConfiguredTarget(
+				e, key.Message.Label,
+				model_core.Patch(e, model_core.Nested(key, key.Message.ConfigurationReference)),
+				defaultInfoProviderIdentifier,
+			)
+			if err != nil {
+				return PatchedTargetCompletionValue[TMetadata]{}, err
+			}
+			fields = defaultInfo
+			groupName = "files"
+		} else {
+			if !outputGroupInfoLoaded {
+				outputGroupInfo = e.GetTargetProviderValue(model_core.MustBuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) *model_analysis_pb.TargetProvider_Key {
+					return &model_analysis_pb.TargetProvider_Key{
+						Label:                  key.Message.Label,
+						ConfigurationReference: model_core.Patch(e, model_core.Nested(key, key.Message.ConfigurationReference)).Merge(patcher),
+						ProviderIdentifier:     "@@builtins_core+//:exports.bzl%OutputGroupInfo",
+					}
+				}))
+				if !outputGroupInfo.IsSet() {
+					return PatchedTargetCompletionValue[TMetadata]{}, evaluation.ErrMissingDependency
+				}
+				outputGroupInfoLoaded = true
+			}
+			if outputGroupInfo.Message.Fields == nil {
+				continue
+			}
+			fields = model_core.Nested(outputGroupInfo, outputGroupInfo.Message.Fields)
+			if !slices.Contains(fields.Message.Keys, groupName) {
+				continue
+			}
+		}
+		files, err := model_starlark.GetStructFieldValue(ctx, c.valueReaders.List, fields, groupName)
+		if err != nil {
+			return PatchedTargetCompletionValue[TMetadata]{}, fmt.Errorf("read output group %q: %w", groupName, err)
+		}
+		filesDepset, ok := files.Message.Kind.(*model_starlark_pb.Value_Depset)
+		if !ok {
+			return PatchedTargetCompletionValue[TMetadata]{}, fmt.Errorf("output group %q is not a depset", groupName)
+		}
+		if err := addFilesToChangeTrackingDirectory(
+			e,
+			model_core.Nested(files, filesDepset.Depset.Elements),
+			&rootDirectory,
+			loadOptions,
+			model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+		); err != nil {
+			return PatchedTargetCompletionValue[TMetadata]{}, fmt.Errorf("materialize output group %q: %w", groupName, err)
+		}
 	}
 
-	// If the target provides an executable, place it in the output
-	// root as well and construct the runfiles directory that needs
-	// to accompany it. This is what allows "bazel run" to launch the
-	// target without having to run an action to do so.
-	executablePath, runfilesDirectory, err := c.getExecutableAndRunfiles(ctx, e, defaultInfo, &rootDirectory, loadOptions)
-	if err != nil {
-		return PatchedTargetCompletionValue[TMetadata]{}, err
+	// Only the default group materializes the executable and runfiles. An
+	// image metadata query must not accidentally run a binary link action.
+	var executablePath string
+	var runfilesDirectory *changeTrackingDirectory[TReference, TMetadata]
+	if defaultInfo.Message != nil {
+		var err error
+		executablePath, runfilesDirectory, err = c.getExecutableAndRunfiles(ctx, e, defaultInfo, &rootDirectory, loadOptions)
+		if err != nil {
+			return PatchedTargetCompletionValue[TMetadata]{}, err
+		}
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -128,6 +164,10 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetCompletionValue(ctx c
 	}
 	return model_core.NewPatchedMessage(value, patcher), nil
 }
+
+// TargetCompletionEnvironmentForTesting lets the existing analysis test
+// harness exercise non-default output groups without running a worker.
+type TargetCompletionEnvironmentForTesting TargetCompletionEnvironment[model_core.CreatedObjectTree, model_core.CreatedObjectTree]
 
 // getExecutableAndRunfiles extracts the FilesToRunProvider from the
 // DefaultInfo provider of a target. If the target provides an
