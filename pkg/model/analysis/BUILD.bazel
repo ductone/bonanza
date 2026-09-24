@@ -188,6 +188,7 @@ go_test(
         "mocks_filesystem_test.go",
         "parameter_file_test.go",
         "repo_platform_host_path_internal_test.go",
+        "target_action_input_root_test.go",
     ],
     embed = [":analysis"],
     deps = [
@@ -225,6 +226,7 @@ gomock(
         "CompletedActionResultEnvironmentForTesting",
         "ExecutionClientForTesting",
         "FileRootEnvironmentForTesting",
+        "TargetActionInputRootEnvironmentForTesting",
     ],
     library = "//pkg/model/analysis",
     mockgen_model_library = "@org_uber_go_mock//mockgen/model",
