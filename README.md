@@ -279,6 +279,14 @@ root-relative entries of a tool's `FilesToRunProvider`, not just its
 runfiles files. JavaScript launchers can therefore read data placed at
 custom runfiles paths when invoked by another rule.
 
+**Action paths.** Main-workspace source files are rooted at the action
+execroot; outputs are rooted at `bazel-out/<configuration>/bin/<package>`,
+and main-workspace runfiles live under `_main/`. External repositories
+retain their `external/<canonical repository>` input/output prefix.
+Action commands receive `BAZEL_BINDIR` relative to the execroot, so
+rules that enter their output package directory can locate source
+files and generated dependencies using the same layout as Bazel.
+
 **Cache hardening.** Cache tag keys carry a semantics version, so
 workers implementing different evaluation semantics read and write
 disjoint keys instead of serving each other stale results. Cached

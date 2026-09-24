@@ -307,7 +307,11 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test target %#v does not have an executable", key.Message.Label)
 	}
 	executable := model_core.Nested(executableValue, executableFile.File)
-	executablePath, err := model_starlark.FileGetInputRootPath(executable, nil)
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+	if !rootModule.IsSet() {
+		return PatchedTargetTestResultValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	executablePath, err := model_starlark.FileGetInputRootPath(executable, nil, rootModule.Message.RootModuleName)
 	if err != nil {
 		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("failed to get path of test executable: %w", err)
 	}

@@ -245,6 +245,7 @@ gomock(
         "CompletedActionResultEnvironmentForTesting",
         "ExecutionClientForTesting",
         "FileRootEnvironmentForTesting",
+        "TargetActionCommandEnvironmentForTesting",
         "TargetActionInputRootEnvironmentForTesting",
         "TargetCompletionEnvironmentForTesting",
     ],

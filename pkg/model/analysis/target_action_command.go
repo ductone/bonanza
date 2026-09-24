@@ -178,6 +178,7 @@ type expandFileIfDirectoryEnvironment[TReference any, TMetadata model_core.Refer
 	model_core.ExistingObjectCapturer[TReference, TMetadata]
 
 	GetFileRootValue(key model_core.PatchedMessage[*model_analysis_pb.FileRoot_Key, TMetadata]) model_core.Message[*model_analysis_pb.FileRoot_Value, TReference]
+	GetRootModuleValue(key *model_analysis_pb.RootModule_Key) model_core.Message[*model_analysis_pb.RootModule_Value, TReference]
 }
 
 // expandFileIfDirectory checks whether a File provided to Args.add*()
@@ -215,7 +216,12 @@ func expandFileIfDirectory[TReference object.BasicReference, TMetadata model_cor
 
 	// Traverse to the root of the directory for which files need to
 	// be reported.
-	directoryPath, err := model_starlark.FileGetInputRootPath(fileDefinition, nil)
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+	if !rootModule.IsSet() {
+		*errOut = evaluation.ErrMissingDependency
+		return func(yield func(*model_starlark.File[TReference, TMetadata]) bool) {}
+	}
+	directoryPath, err := model_starlark.FileGetInputRootPath(fileDefinition, nil, rootModule.Message.RootModuleName)
 	if err != nil {
 		*errOut = err
 		return func(yield func(*model_starlark.File[TReference, TMetadata]) bool) {}
@@ -278,6 +284,10 @@ func (c *baseComputer[TReference, TMetadata]) expandActionArguments(
 	arguments model_core.Message[[]*model_analysis_pb.Args, TReference],
 	emit func(string) error,
 ) error {
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+	if !rootModule.IsSet() {
+		return evaluation.ErrMissingDependency
+	}
 	valueDecodingOptions := c.getValueDecodingOptions(ctx, func(resolvedLabel label.ResolvedLabel) (starlark.Value, error) {
 		return model_starlark.NewLabel[TReference, TMetadata](resolvedLabel), nil
 	})
@@ -429,7 +439,7 @@ func (c *baseComputer[TReference, TMetadata]) expandActionArguments(
 					case starlark.String:
 						s = string(typedV)
 					case *model_starlark.File[TReference, TMetadata]:
-						s, err = model_starlark.FileGetInputRootPath(typedV.GetDefinition(), typedV.GetTreeRelativePath())
+						s, err = model_starlark.FileGetInputRootPath(typedV.GetDefinition(), typedV.GetTreeRelativePath(), rootModule.Message.RootModuleName)
 						if err != nil {
 							return err
 						}
@@ -577,12 +587,14 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	fileCreationParametersMessage := e.GetFileCreationParametersValue(&model_analysis_pb.FileCreationParameters_Key{})
 	buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
 	if !action.IsSet() ||
 		!allBuiltinsModulesNames.IsSet() ||
 		!gotActionEncoder ||
 		!gotActionReaders ||
 		!directoryCreationParametersMessage.IsSet() ||
 		!gotDirectoryReaders ||
+		!rootModule.IsSet() ||
 		!fileCreationParametersMessage.IsSet() ||
 		!buildSpecification.IsSet() {
 		return PatchedTargetActionCommandValue[TMetadata]{}, evaluation.ErrMissingDependency
@@ -623,11 +635,27 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 		return PatchedTargetActionCommandValue[TMetadata]{}, err
 	}
 
+	// BAZEL_BINDIR tells actions where the bin directory of the current
+	// configuration lives, so that the paths reported to them can be
+	// interpreted relative to it.
+	configurationReferenceComponent, err := model_starlark.ConfigurationReferenceToComponent(model_core.Nested(id, id.Message.ConfigurationReference))
+	if err != nil {
+		return PatchedTargetActionCommandValue[TMetadata]{}, err
+	}
+	binDirectory := strings.Join([]string{model_starlark.ComponentStrBazelOut, configurationReferenceComponent, model_starlark.ComponentStrBin}, "/")
+
 	// Keep the original action environment by reference when no client
 	// override exists. Most Bonanza invocations take this path.
 	var environmentCandidate inlinedtree.Candidate[*model_command_pb.Command, TMetadata]
 	if len(buildSpecification.Message.ActionEnv) == 0 {
 		environmentVariablesList := model_core.PatchList(e, model_core.Nested(action, actionDefinition.Env))
+		environmentVariablesList.Message = append(slices.Clone(environmentVariablesList.Message), &model_command_pb.EnvironmentVariableList_Element{
+			Level: &model_command_pb.EnvironmentVariableList_Element_Leaf_{
+				Leaf: &model_command_pb.EnvironmentVariableList_Element_Leaf{
+					Name: "BAZEL_BINDIR", Value: binDirectory,
+				},
+			},
+		})
 		environmentCandidate = inlinedtree.AlwaysInline(
 			environmentVariablesList.Patcher,
 			func(command model_core.PatchedMessage[*model_command_pb.Command, TMetadata]) {
@@ -637,7 +665,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 	} else {
 		// Explicit action env wins over --action_env; the latter comes from
 		// the client and is part of the build specification/action key.
-		environment := make(map[string]string, len(buildSpecification.Message.ActionEnv))
+		environment := make(map[string]string, len(buildSpecification.Message.ActionEnv)+1)
 		for _, override := range buildSpecification.Message.ActionEnv {
 			if !override.Unset {
 				environment[override.Name] = override.Value
@@ -662,6 +690,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 		if errIterEnv != nil {
 			return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("read action environment: %w", errIterEnv)
 		}
+		// BAZEL_BINDIR is derived from the configuration, so it is added
+		// last and wins over an action or client provided value.
+		environment["BAZEL_BINDIR"] = binDirectory
 		environmentVariablesList, envParentNodeComputer, err := convertDictToEnvironmentVariableList(ctx, environment, actionEncoder, referenceFormat, e)
 		if err != nil {
 			return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("create action environment: %w", err)
@@ -713,17 +744,13 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 			return PatchedTargetActionCommandValue[TMetadata]{}, err
 		}
 	}
-	configurationReferenceComponent, err := model_starlark.ConfigurationReferenceToComponent(model_core.Nested(id, id.Message.ConfigurationReference))
-	if err != nil {
-		return PatchedTargetActionCommandValue[TMetadata]{}, err
+	// The output pattern and File.path must agree for both the root
+	// module and external repositories.
+	outputPrefix := []string{model_starlark.ComponentStrBin, configurationReferenceComponent, model_starlark.ComponentStrBazelOut}
+	if targetPackage.GetCanonicalRepo().String() != rootModule.Message.RootModuleName+"+" {
+		outputPrefix = append([]string{targetPackage.GetCanonicalRepo().String(), model_starlark.ComponentStrExternal}, outputPrefix...)
 	}
-	for _, component := range []string{
-		targetPackage.GetCanonicalRepo().String(),
-		model_starlark.ComponentStrExternal,
-		model_starlark.ComponentStrBin,
-		configurationReferenceComponent,
-		model_starlark.ComponentStrBazelOut,
-	} {
+	for _, component := range outputPrefix {
 		outputPathPatternChildren, err = model_command.PrependDirectoryToPathPatternChildren(
 			ctx,
 			component,
@@ -880,3 +907,6 @@ func (de *directoryExpander[TReference, TMetadata]) doExpand(thread *starlark.Th
 	}
 	return starlark.NewList(files), nil
 }
+
+// TargetActionCommandEnvironmentForTesting generates mocks for the action command boundary.
+type TargetActionCommandEnvironmentForTesting TargetActionCommandEnvironment[model_core.CreatedObjectTree, model_core.CreatedObjectTree]

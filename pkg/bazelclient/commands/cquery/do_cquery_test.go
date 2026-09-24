@@ -11,7 +11,7 @@ import (
 
 func TestOutputFilesUsesMaterializedLayout(t *testing.T) {
 	root := t.TempDir()
-	file := "bazel-out/config/bin/external/c1+/cmd/example/example"
+	file := "bazel-out/config/bin/cmd/example/example"
 	files, err := outputFiles(root, []*model_analysis_pb.ConfiguredQueryResult_Value_Target{
 		{Label: "@@c1+//cmd/example:example", Files: []string{file}},
 		{Label: "@@c1+//cmd/example:alias", Files: []string{file}},

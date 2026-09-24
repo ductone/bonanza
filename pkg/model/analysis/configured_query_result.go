@@ -134,7 +134,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(
 				if !ok {
 					return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("output of %#v is not a file", target.Label)
 				}
-				outputPath, err := model_starlark.FileGetInputRootPath(model_core.Nested(entry, file.File), nil)
+				outputPath, err := model_starlark.FileGetInputRootPath(model_core.Nested(entry, file.File), nil, buildSpecification.Message.RootModuleName)
 				if err != nil {
 					return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("get output path of %#v: %w", target.Label, err)
 				}

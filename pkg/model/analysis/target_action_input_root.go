@@ -46,9 +46,11 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
 	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	fileCreationParametersMessage := e.GetFileCreationParametersValue(&model_analysis_pb.FileCreationParameters_Key{})
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
 	if !action.IsSet() ||
 		!gotDirectoryCreationParameters ||
 		!gotDirectoryReaders ||
+		!rootModule.IsSet() ||
 		!fileCreationParametersMessage.IsSet() {
 		return PatchedTargetActionInputRootValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
@@ -71,6 +73,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 		model_core.Nested(id, id.Message.ConfigurationReference),
 		targetLabel.GetCanonicalPackage(),
 		model_analysis_pb.DirectoryLayout_INPUT_ROOT,
+		rootModule.Message.RootModuleName,
 	)
 	if err != nil {
 		return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to get package output directory: %w", err)
@@ -125,7 +128,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionInputRootValue(
 		}
 
 		// Create the tool's runfiles directory.
-		executablePath, err := model_starlark.FileGetInputRootPath(executable, nil)
+		executablePath, err := model_starlark.FileGetInputRootPath(executable, nil, rootModule.Message.RootModuleName)
 		if err != nil {
 			return PatchedTargetActionInputRootValue[TMetadata]{}, fmt.Errorf("failed to get path of tool executable: %w", err)
 		}
