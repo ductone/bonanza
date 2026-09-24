@@ -469,3 +469,56 @@ local_path_override(
 		))
 	})
 }
+
+func TestInjectRepoInDependencyModule(t *testing.T) {
+	filename := util.Must(label.NewCanonicalLabel("@@dependency+//:MODULE.bazel"))
+	extensionLabel := util.Must(label.NewApparentLabel("@@dependency+//:extensions.bzl"))
+	extensionName := util.Must(label.NewStarlarkIdentifier("crate"))
+
+	t.Run("Ignored", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		handler := NewMockRootModuleDotBazelHandler(ctrl)
+		handler.EXPECT().UseExtension(extensionLabel, extensionName, true, false).
+			Return(pg_starlark.NullModuleExtensionProxy, nil)
+		require.NoError(t, pg_starlark.ParseModuleDotBazel(
+			`crate = use_extension("//:extensions.bzl", "crate", dev_dependency = True)
+inject_repo(crate, "bzip2", lzma = "xz")
+`,
+			filename,
+			path.UNIXFormat,
+			pg_starlark.NewOverrideIgnoringRootModuleDotBazelHandler(handler),
+		))
+	})
+
+	t.Run("InvalidRepoRejected", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		handler := NewMockRootModuleDotBazelHandler(ctrl)
+		handler.EXPECT().UseExtension(extensionLabel, extensionName, true, false).
+			Return(pg_starlark.NullModuleExtensionProxy, nil)
+		err := pg_starlark.ParseModuleDotBazel(
+			`crate = use_extension("//:extensions.bzl", "crate", dev_dependency = True)
+inject_repo(crate, 123)
+`,
+			filename,
+			path.UNIXFormat,
+			pg_starlark.NewOverrideIgnoringRootModuleDotBazelHandler(handler),
+		)
+		require.ErrorContains(t, err, "inject_repo: for parameter 1:")
+	})
+
+	t.Run("ActiveRootInjectionRejected", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		handler := NewMockRootModuleDotBazelHandler(ctrl)
+		handler.EXPECT().UseExtension(extensionLabel, extensionName, false, false).
+			Return(pg_starlark.NullModuleExtensionProxy, nil)
+		err := pg_starlark.ParseModuleDotBazel(
+			`crate = use_extension("//:extensions.bzl", "crate")
+inject_repo(crate, "bzip2")
+`,
+			filename,
+			path.UNIXFormat,
+			handler,
+		)
+		require.ErrorContains(t, err, "inject_repo() in the root module is not supported")
+	})
+}
