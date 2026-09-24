@@ -57,6 +57,10 @@ func main() {
 		if err := util.UnmarshalConfigurationFromFile(os.Args[1], &configuration); err != nil {
 			return util.StatusWrapf(err, "Failed to read configuration from %s", os.Args[1])
 		}
+		repositoryMode, err := configuredRepositoryMode(&configuration)
+		if err != nil {
+			return err
+		}
 		lifecycleState, grpcClientFactory, err := global.ApplyConfiguration(configuration.Global, dependenciesGroup)
 		if err != nil {
 			return util.StatusWrap(err, "Failed to apply global configuration options")
@@ -215,6 +219,13 @@ func main() {
 			if err := mount.Expose(dependenciesGroup, rootDirectory); err != nil {
 				return util.StatusWrap(err, "Failed to expose build directory mount")
 			}
+			if repositoryMode != nil {
+				// Neither a process-owned config nor an action flag can replace
+				// a live, independently signed isolation attestation.
+				if err := repositoryMode.Verify(); err != nil {
+					return err
+				}
+			}
 
 			if len(buildDirectoryConfiguration.Runners) == 0 {
 				return util.StatusWrap(err, "Cannot start worker without any runners")
@@ -320,6 +331,7 @@ func main() {
 						defaultAttributesSetter,
 						maximumExecutionTimeoutCompensation,
 						workerID,
+						repositoryMode,
 					)
 
 					client, err := remoteworker.NewClient(

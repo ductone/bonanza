@@ -37,6 +37,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	"github.com/google/uuid"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -116,6 +117,7 @@ type localExecutor struct {
 	readinessCheckingDirectory          virtual.Directory
 	maximumExecutionTimeoutCompensation time.Duration
 	workerID                            map[string]string
+	repositoryMode                      *RepositoryMode
 }
 
 // NewLocalExecutor creates an executor of command actions, running them
@@ -142,6 +144,7 @@ func NewLocalExecutor(
 	defaultAttributesSetter virtual.DefaultAttributesSetter,
 	maximumExecutionTimeoutCompensation time.Duration,
 	workerID map[string]string,
+	repositoryMode *RepositoryMode,
 ) remoteworker.Executor[*model_executewithstorage.Action[object.GlobalReference], model_core.Decodable[object.LocalReference], model_core.Decodable[object.LocalReference]] {
 	return &localExecutor{
 		objectDownloader:               objectDownloader,
@@ -169,6 +172,7 @@ func NewLocalExecutor(
 		),
 		maximumExecutionTimeoutCompensation: maximumExecutionTimeoutCompensation,
 		workerID:                            workerID,
+		repositoryMode:                      repositoryMode,
 	}
 }
 
@@ -236,6 +240,10 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 		var badReference model_core.Decodable[object.LocalReference]
 		return badReference, 0, 0, status.Error(codes.InvalidArgument, "This worker cannot execute actions of this type")
 	}
+	if e.repositoryMode != nil && (executionTimeout <= 0 || executionTimeout > 30*time.Minute) {
+		var badReference model_core.Decodable[object.LocalReference]
+		return badReference, 0, 0, status.Error(codes.FailedPrecondition, "repository action requires a bounded execution timeout")
+	}
 
 	// Create a clock that compensates for time that's spent
 	// downloading objects from storage. This is needed to
@@ -300,7 +308,12 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			result.Status = status.Convert(util.StatusWrap(err, "Failed to read command")).Proto()
 			return &result
 		}
-		if err := validateNativeCommand(command.Message); err != nil {
+		if e.repositoryMode != nil {
+			err = e.repositoryMode.validateCommand(ctx, command.Message)
+		} else {
+			err = validateNativeCommand(command.Message)
+		}
+		if err != nil {
 			result.Status = status.Convert(err).Proto()
 			return &result
 		}
@@ -427,7 +440,7 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 		)
 		defer buildDirectory.RemoveAllChildren(true)
 
-		// This runner only executes commands with read-only input files.
+		// Input files are copy-on-write only on the isolated repository lane.
 		inputFileReader := model_filesystem.NewFileReader(
 			model_parser.LookupParsedObjectReader(
 				parsedObjectPoolIngester,
@@ -445,7 +458,7 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			),
 			e.objectStoreSemaphore,
 		)
-		inputFileFactory := model_filesystem_virtual.NewStatelessHandleAllocatingFileFactory(
+		var inputFileFactory model_filesystem_virtual.FileFactory = model_filesystem_virtual.NewStatelessHandleAllocatingFileFactory(
 			model_filesystem_virtual.NewObjectBackedFileFactory(
 				ctxWithIOError,
 				inputFileReader,
@@ -453,6 +466,13 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			),
 			e.handleAllocator.New(),
 		)
+		if command.Message.GetNeedsWritableInputFiles() {
+			inputFileFactory = model_filesystem_virtual.NewObjectInitializedFileFactory(
+				ctxWithIOError,
+				inputFileReader,
+				virtual.NewHandleAllocatingFileAllocator(fileAllocator, e.handleAllocator),
+			)
+		}
 
 		// Create subdirectories that should be present when the command
 		// is executed, such as the input root directory.
@@ -492,6 +512,12 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 		}
 
 		buildDirectoryUUID := util.Must(e.uuidGenerator())
+		// The dedicated repository worker runs a single action at a time.
+		// Reusing this name gives repository rules the same absolute input
+		// path across successive actions in a repository evaluation.
+		if stable := command.Message.GetStableInputRootPathUuid(); stable != "" {
+			buildDirectoryUUID = uuid.MustParse(stable)
+		}
 
 		buildDirectoryName := path.MustNewComponent(buildDirectoryUUID.String())
 		if err := e.topLevelDirectory.AddChild(ctx, buildDirectoryName, virtual.DirectoryChild{}.FromDirectory(buildDirectory)); err != nil {
@@ -502,6 +528,12 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 
 		// Invoke the command.
 		buildDirectoryPath := (*path.Trace)(nil).Append(buildDirectoryName)
+		if e.repositoryMode != nil {
+			if err := e.repositoryMode.Verify(); err != nil {
+				result.Status = status.Convert(err).Proto()
+				return &result
+			}
+		}
 		ctxWithTimeout, cancelTimeout := suspendableClock.NewContextWithTimeout(ctxWithIOError, executionTimeout)
 		runResponse, runErr := e.runner.Run(ctxWithTimeout, &runner_pb.RunRequest{
 			Arguments:            arguments,
