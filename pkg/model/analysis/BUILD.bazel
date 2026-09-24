@@ -244,6 +244,7 @@ gomock(
         "CompletedActionResultEnvironmentForTesting",
         "ExecutionClientForTesting",
         "FileRootEnvironmentForTesting",
+        "TargetActionCommandEnvironmentForTesting",
         "TargetActionInputRootEnvironmentForTesting",
     ],
     library = "//pkg/model/analysis",

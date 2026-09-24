@@ -306,6 +306,7 @@
             "FileReader",
             "FileRoot",
             "Repo",
+            "RootModule",
             "TargetActionInputRoot",
             "TargetActionResult",
             "TargetOutput"
@@ -324,7 +325,8 @@
             "DirectoryCreationParametersObject",
             "DirectoryReaders",
             "FilesRoot",
-            "FileRoot"
+            "FileRoot",
+            "RootModule"
          ],
          "keyContainsReferences": true
       },
@@ -726,6 +728,7 @@
             "FileCreationParameters",
             "FileRoot",
             "FilesRoot",
+            "RootModule",
             "TargetAction"
          ],
          "keyContainsReferences": true
@@ -747,6 +750,7 @@
             "DirectoryReaders",
             "FileRoot",
             "FilesRoot",
+            "RootModule",
             "TargetProvider"
          ],
          "keyContainsReferences": true
@@ -792,6 +796,7 @@
             "FileCreationParameters",
             "FileRoot",
             "FilesRoot",
+            "RootModule",
             "ResolvedToolchains",
             "Target",
             "TargetProvider",

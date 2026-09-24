@@ -203,13 +203,13 @@ verify_output() { # relative path, expected substring
   [ -f "$f" ] || die "expected output file $f to exist"
   grep -q "$2" "$f" || die "output file $f does not contain $2"
 }
-BIN_DIRS=("$OUT"/bazel-out/*/bin/external/testproject+)
+BIN_DIRS=("$OUT"/bazel-out/*/bin)
 [ -d "${BIN_DIRS[0]}" ] ||
   die "no output files were written below $OUT/bazel-out"
 BIN="${BIN_DIRS[0]#"$OUT"/}"
 verify_output "$BIN/hello.txt" "Hello from patched bonanza"
 verify_output "$BIN/verify.txt" "Hello from patched bonanza"
-verify_output "external/testproject+/action_edges_template.txt" "name={NAME}"
+verify_output "action_edges_template.txt" "name={NAME}"
 [ -L "$PROJECT/bonanza-bin" ] ||
   die "no bonanza-bin convenience symlink was created"
 log "artifacts were materialized below $OUT"
@@ -328,7 +328,7 @@ verify_run() { # expected substring
     die "output of the launched executable does not contain $1"
 }
 verify_run "run: args=one two"
-verify_run "run: cwd=testproject+"
+verify_run "run: cwd=_main"
 verify_run "run: runfiles=runnable.runfiles"
 verify_run "run: data=present"
 grep -qF "run: workspace=$(basename "$PROJECT")" "$RUN_DIR/run_stdout.log" ||

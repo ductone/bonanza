@@ -2750,7 +2750,11 @@ func (rca *ruleContextActions[TReference, TMetadata]) doRun(thread *starlark.Thr
 			}
 		}
 
-		argv0, err = model_starlark.FileGetInputRootPath(executableFile.GetDefinition(), nil)
+		rootModule := rc.environment.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+		if !rootModule.IsSet() {
+			return nil, evaluation.ErrMissingDependency
+		}
+		argv0, err = model_starlark.FileGetInputRootPath(executableFile.GetDefinition(), nil, rootModule.Message.RootModuleName)
 		if err != nil {
 			return nil, fmt.Errorf("executable: %w", err)
 		}

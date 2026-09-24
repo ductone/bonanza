@@ -175,7 +175,11 @@ func (c *baseComputer[TReference, TMetadata]) getExecutableAndRunfiles(
 	); err != nil {
 		return "", nil, fmt.Errorf("failed to add executable to output root: %w", err)
 	}
-	executablePath, err := model_starlark.FileGetInputRootPath(executable, nil)
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+	if !rootModule.IsSet() {
+		return "", nil, evaluation.ErrMissingDependency
+	}
+	executablePath, err := model_starlark.FileGetInputRootPath(executable, nil, rootModule.Message.RootModuleName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get path of executable: %w", err)
 	}
@@ -291,7 +295,11 @@ func (c *baseComputer[TReference, TMetadata]) addRunfilesSymlink(
 	); err != nil {
 		return err
 	}
-	sourcePath, err := model_starlark.FileGetRunfilesPath(file)
+	rootModule := e.GetRootModuleValue(&model_analysis_pb.RootModule_Key{})
+	if !rootModule.IsSet() {
+		return evaluation.ErrMissingDependency
+	}
+	sourcePath, err := model_starlark.FileGetRunfilesPath(file, rootModule.Message.RootModuleName)
 	if err != nil {
 		return err
 	}

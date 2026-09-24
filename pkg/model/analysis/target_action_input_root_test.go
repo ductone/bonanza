@@ -7,9 +7,11 @@ import (
 
 	model_analysis "bonanza.build/pkg/model/analysis"
 	model_core "bonanza.build/pkg/model/core"
+	model_encoding "bonanza.build/pkg/model/encoding"
 	model_filesystem "bonanza.build/pkg/model/filesystem"
 	model_parser "bonanza.build/pkg/model/parser"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
+	model_command_pb "bonanza.build/pkg/proto/model/command"
 	model_filesystem_pb "bonanza.build/pkg/proto/model/filesystem"
 	model_starlark_pb "bonanza.build/pkg/proto/model/starlark"
 	object_pb "bonanza.build/pkg/proto/storage/object"
@@ -65,14 +67,23 @@ func TestToolRunfilesSymlinksInActionInput(t *testing.T) {
 	ctrl, ctx := gomock.WithContext(t.Context(), t)
 	bct := newBaseComputerTester(ctrl)
 	e := NewMockTargetActionInputRootEnvironmentForTesting(ctrl)
+	e.EXPECT().GetRootModuleValue(testutil.EqProto(t, &model_analysis_pb.RootModule_Key{})).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.RootModule_Value{RootModuleName: "app"})).AnyTimes()
 
 	key := &model_analysis_pb.TargetActionInputRoot_Key{Id: &model_analysis_pb.TargetActionId{Label: "@@app+//frontend:build"}}
 	e.EXPECT().GetTargetActionValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.TargetAction_Value{
 		Definition: &model_analysis_pb.TargetActionDefinition{
 			InitialOutputDirectory: &model_filesystem_pb.Directory{
 				Contents: &model_filesystem_pb.Directory_ContentsInline{
-					ContentsInline: &model_filesystem_pb.DirectoryContents{Leaves: emptyLeaves},
+					ContentsInline: singleChildDirectoryContents("dist", &model_filesystem_pb.DirectoryContents{Leaves: emptyLeaves}),
 				},
+			},
+			Inputs: []*model_starlark_pb.List_Element{
+				{Level: &model_starlark_pb.List_Element_Leaf{Leaf: &model_starlark_pb.Value{Kind: &model_starlark_pb.Value_File{
+					File: &model_starlark_pb.File{Label: "@@app+//frontend:package.json"},
+				}}}},
+				{Level: &model_starlark_pb.List_Element_Leaf{Leaf: &model_starlark_pb.Value{Kind: &model_starlark_pb.Value_File{
+					File: &model_starlark_pb.File{Label: "@@app+//frontend:node_modules/dependency.txt"},
+				}}}},
 			},
 			Tools: []*model_analysis_pb.FilesToRunProvider{{
 				Level: &model_analysis_pb.FilesToRunProvider_Leaf_{Leaf: &model_analysis_pb.FilesToRunProvider_Leaf{
@@ -110,17 +121,23 @@ func TestToolRunfilesSymlinksInActionInput(t *testing.T) {
 		switch file.Label {
 		case "@@app+//tools:runner":
 			require.Equal(t, model_analysis_pb.DirectoryLayout_INPUT_ROOT, key.Message.DirectoryLayout)
-			relativePath = "external/app+/tools/runner"
+			relativePath = "tools/runner"
+		case "@@app+//frontend:package.json":
+			require.Equal(t, model_analysis_pb.DirectoryLayout_INPUT_ROOT, key.Message.DirectoryLayout)
+			relativePath = "frontend/package.json"
+		case "@@app+//frontend:node_modules/dependency.txt":
+			require.Equal(t, model_analysis_pb.DirectoryLayout_INPUT_ROOT, key.Message.DirectoryLayout)
+			relativePath = "bazel-out/none/bin/frontend/node_modules/dependency.txt"
 		case "@@app+//frontend:entry.mjs", "@@app+//frontend:manifest.json":
 			require.Equal(t, model_analysis_pb.DirectoryLayout_RUNFILES, key.Message.DirectoryLayout)
-			relativePath = "app+/frontend/" + file.Label[len("@@app+//frontend:"):]
+			relativePath = "_main/frontend/" + file.Label[len("@@app+//frontend:"):]
 		default:
 			t.Fatalf("unexpected file: %s", file.Label)
 		}
 		return model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.FileRoot_Value{
 			RootDirectory: fileTree(relativePath),
 		})
-	}).Times(3)
+	}).Times(5)
 	e.EXPECT().CaptureCreatedObject(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, created model_core.CreatedObject[model_core.CreatedObjectTree]) (model_core.CreatedObjectTree, error) {
 		return model_core.CreatedObjectTree(created), nil
 	}).AnyTimes()
@@ -141,8 +158,10 @@ func TestToolRunfilesSymlinksInActionInput(t *testing.T) {
 		path       string
 		executable bool
 	}{
-		{"external/app+/tools/runner.runfiles/_main/lib/entry.mjs", true},
-		{"external/app+/tools/runner.runfiles/manifest.json", false},
+		{"frontend/package.json", false},
+		{"bazel-out/none/bin/frontend/node_modules/dependency.txt", false},
+		{"tools/runner.runfiles/_main/lib/entry.mjs", true},
+		{"tools/runner.runfiles/manifest.json", false},
 	} {
 		parts := strings.Split(check.path, "/")
 		directory := contents
@@ -166,7 +185,103 @@ func TestToolRunfilesSymlinksInActionInput(t *testing.T) {
 				found = file.Properties
 			}
 		}
-		require.NotNil(t, found, "missing runfile %s", check.path)
+		require.NotNil(t, found, "missing action input %s", check.path)
 		require.Equal(t, check.executable, found.IsExecutable)
+	}
+	// The package output directory is rooted at Bazel's bindir; the tool's
+	// runfiles stay next to its executable, not next to the output package.
+	outputDirectory := contents
+	for _, component := range []string{"bazel-out", "none", "bin", "frontend"} {
+		var next *model_filesystem_pb.Directory
+		for _, child := range outputDirectory.Message.Directories {
+			if child.Name == component {
+				next = child.Directory
+				break
+			}
+		}
+		require.NotNil(t, next, "missing output directory component %s", component)
+		outputDirectory, err = model_filesystem.DirectoryGetContents(ctx, reader, model_core.Nested(outputDirectory, next))
+		require.NoError(t, err)
+	}
+}
+
+// C1's bazel/frontend/build_runner.mjs derives the execroot by removing
+// BAZEL_BINDIR and the package name from the action's package cwd.
+func TestFrontendActionCommandLayout(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		label      string
+		outputPath []string
+	}{
+		{"MainWorkspace", "@@app+//frontend:build", []string{"bazel-out", "none", "bin", "frontend", "dist"}},
+		{"ExternalRepository", "@@thirdparty+//frontend:build", []string{"bazel-out", "none", "bin", "external", "thirdparty+", "frontend", "dist"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl, ctx := gomock.WithContext(t.Context(), t)
+			bct := newBaseComputerTester(ctrl)
+			e := NewMockTargetActionCommandEnvironmentForTesting(ctrl)
+			encoder := model_encoding.NewLZWCompressingDeterministicBinaryEncoder(1 << 20)
+			e.EXPECT().GetTargetActionValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.TargetAction_Value{
+				Definition: &model_analysis_pb.TargetActionDefinition{
+					OutputPathPattern: &model_command_pb.PathPattern{
+						Children: &model_command_pb.PathPattern_ChildrenInline{
+							ChildrenInline: &model_command_pb.PathPattern_Children{
+								Children: []*model_command_pb.PathPattern_Child{{Name: "dist", Pattern: &model_command_pb.PathPattern{}}},
+							},
+						},
+					},
+					Env: []*model_command_pb.EnvironmentVariableList_Element{{
+						Level: &model_command_pb.EnvironmentVariableList_Element_Leaf_{
+							Leaf: &model_command_pb.EnvironmentVariableList_Element_Leaf{Name: "NODE_ENV", Value: "production"},
+						},
+					}},
+				},
+			}))
+			e.EXPECT().GetActionEncoderObjectValue(gomock.Any()).Return(encoder, true)
+			e.EXPECT().GetActionReadersValue(gomock.Any()).Return(&model_analysis.ActionReaders[model_core.CreatedObjectTree]{}, true)
+			e.EXPECT().GetBuiltinsModuleNamesValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.BuiltinsModuleNames_Value{}))
+			e.EXPECT().GetDirectoryCreationParametersValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.DirectoryCreationParameters_Value{
+				DirectoryCreationParameters: &model_filesystem_pb.DirectoryCreationParameters{},
+			}))
+			e.EXPECT().GetFileCreationParametersValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.FileCreationParameters_Value{
+				FileCreationParameters: &model_filesystem_pb.FileCreationParameters{},
+			}))
+			e.EXPECT().GetDirectoryReadersValue(gomock.Any()).Return(&model_analysis.DirectoryReaders[model_core.CreatedObjectTree]{}, true)
+			e.EXPECT().GetBuildSpecificationValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.BuildSpecification_Value{}))
+			e.EXPECT().GetRootModuleValue(gomock.Any()).Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.RootModule_Value{RootModuleName: "app"})).AnyTimes()
+			e.EXPECT().CaptureCreatedObject(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, created model_core.CreatedObject[model_core.CreatedObjectTree]) (model_core.CreatedObjectTree, error) {
+				return model_core.CreatedObjectTree(created), nil
+			}).AnyTimes()
+
+			result, err := bct.computer.ComputeTargetActionCommandValue(ctx, model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.TargetActionCommand_Key{
+				Id: &model_analysis_pb.TargetActionId{Label: tc.label},
+			}), e)
+			require.NoError(t, err)
+			resultValue, metadata := result.SortAndSetReferences()
+			resultMessage := model_core.NewMessage(resultValue.Message, object.OutgoingReferencesList[model_core.CreatedObjectTree](metadata))
+			command, err := model_parser.Dereference(ctx, model_parser.LookupParsedObjectReader(
+				bct.parsedObjectPoolIngester,
+				model_parser.NewChainedObjectParser(
+					model_parser.NewEncodedObjectParser[model_core.CreatedObjectTree](encoder),
+					model_parser.NewProtoObjectParser[model_core.CreatedObjectTree, model_command_pb.Command](),
+				),
+			), model_core.Nested(resultMessage, resultMessage.Message.CommandReference))
+			require.NoError(t, err)
+			require.Equal(t, ".", command.Message.WorkingDirectory)
+			env := map[string]string{}
+			for _, variable := range command.Message.EnvironmentVariables {
+				env[variable.GetLeaf().Name] = variable.GetLeaf().Value
+			}
+			require.Equal(t, "production", env["NODE_ENV"])
+			require.Equal(t, "bazel-out/none/bin", env["BAZEL_BINDIR"])
+			pattern := command.Message.OutputPathPattern
+			for _, component := range tc.outputPath {
+				children := pattern.GetChildrenInline().GetChildren()
+				require.Len(t, children, 1)
+				require.Equal(t, component, children[0].Name)
+				pattern = children[0].Pattern
+			}
+			require.Nil(t, pattern.Children)
+		})
 	}
 }

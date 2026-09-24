@@ -22,6 +22,7 @@ type addFilesToChangeTrackingDirectoryEnvironment[TReference any, TMetadata mode
 
 	GetFilesRootValue(key model_core.PatchedMessage[*model_analysis_pb.FilesRoot_Key, TMetadata]) model_core.Message[*model_analysis_pb.FilesRoot_Value, TReference]
 	GetFileRootValue(key model_core.PatchedMessage[*model_analysis_pb.FileRoot_Key, TMetadata]) model_core.Message[*model_analysis_pb.FileRoot_Value, TReference]
+	GetRootModuleValue(key *model_analysis_pb.RootModule_Key) model_core.Message[*model_analysis_pb.RootModule_Value, TReference]
 }
 
 func addFilesToChangeTrackingDirectory[TReference object.BasicReference, TMetadata model_core.ReferenceMetadata](

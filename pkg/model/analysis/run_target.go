@@ -100,7 +100,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRunTargetValue(ctx context.
 		&model_analysis_pb.RunTarget_Value{
 			ExecutablePath:    targetCompletionValue.Message.ExecutablePath,
 			RunfilesDirectory: runfilesDirectory.Message,
-			WorkspaceName:     rootRepo.String(),
+			WorkspaceName:     componentMainWorkspaceName.String(),
 		},
 		runfilesDirectory.Patcher,
 	), nil
