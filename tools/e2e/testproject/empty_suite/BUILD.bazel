@@ -1,0 +1,6 @@
+load("//:tests.bzl", "shell_test")
+
+shell_test(name = "package_passing_test")
+shell_test(name = "package_failing_test", exit_code = 1)
+
+test_suite(name = "all_tests")

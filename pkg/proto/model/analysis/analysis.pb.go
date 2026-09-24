@@ -13705,6 +13705,8 @@ type TargetTestResult_Key struct {
 	Label                  string                   `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
 	ConfigurationReference *core.DecodableReference `protobuf:"bytes,2,opt,name=configuration_reference,json=configurationReference,proto3" json:"configuration_reference,omitempty"`
 	TestFilter             string                   `protobuf:"bytes,3,opt,name=test_filter,json=testFilter,proto3" json:"test_filter,omitempty"`
+	ShardIndex             uint32                   `protobuf:"varint,4,opt,name=shard_index,json=shardIndex,proto3" json:"shard_index,omitempty"`
+	ShardCount             uint32                   `protobuf:"varint,5,opt,name=shard_count,json=shardCount,proto3" json:"shard_count,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -13760,11 +13762,26 @@ func (x *TargetTestResult_Key) GetTestFilter() string {
 	return ""
 }
 
+func (x *TargetTestResult_Key) GetShardIndex() uint32 {
+	if x != nil {
+		return x.ShardIndex
+	}
+	return 0
+}
+
+func (x *TargetTestResult_Key) GetShardCount() uint32 {
+	if x != nil {
+		return x.ShardCount
+	}
+	return 0
+}
+
 type TargetTestResult_Value struct {
 	state            protoimpl.MessageState   `protogen:"open.v1"`
 	Status           TestStatus               `protobuf:"varint,1,opt,name=status,proto3,enum=bonanza.model.analysis.TestStatus" json:"status,omitempty"`
 	ExitCode         int64                    `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
 	OutputsReference *core.DecodableReference `protobuf:"bytes,3,opt,name=outputs_reference,json=outputsReference,proto3" json:"outputs_reference,omitempty"`
+	ShardIndex       uint32                   `protobuf:"varint,4,opt,name=shard_index,json=shardIndex,proto3" json:"shard_index,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -13818,6 +13835,13 @@ func (x *TargetTestResult_Value) GetOutputsReference() *core.DecodableReference 
 		return x.OutputsReference
 	}
 	return nil
+}
+
+func (x *TargetTestResult_Value) GetShardIndex() uint32 {
+	if x != nil {
+		return x.ShardIndex
+	}
+	return 0
 }
 
 type QueryExpression_Set struct {
@@ -14433,6 +14457,7 @@ type TestResult_Key struct {
 	Configurations []*BuildResult_Key_Configuration `protobuf:"bytes,1,rep,name=configurations,proto3" json:"configurations,omitempty"`
 	TargetPatterns []string                         `protobuf:"bytes,2,rep,name=target_patterns,json=targetPatterns,proto3" json:"target_patterns,omitempty"`
 	TestFilter     string                           `protobuf:"bytes,3,opt,name=test_filter,json=testFilter,proto3" json:"test_filter,omitempty"`
+	TestTagFilters []string                         `protobuf:"bytes,4,rep,name=test_tag_filters,json=testTagFilters,proto3" json:"test_tag_filters,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -14488,6 +14513,13 @@ func (x *TestResult_Key) GetTestFilter() string {
 	return ""
 }
 
+func (x *TestResult_Key) GetTestTagFilters() []string {
+	if x != nil {
+		return x.TestTagFilters
+	}
+	return nil
+}
+
 type TestResult_Value struct {
 	state         protoimpl.MessageState   `protogen:"open.v1"`
 	Tests         []*TestResult_Value_Test `protobuf:"bytes,1,rep,name=tests,proto3" json:"tests,omitempty"`
@@ -14538,6 +14570,8 @@ type TestResult_Value_Test struct {
 	Status           TestStatus               `protobuf:"varint,2,opt,name=status,proto3,enum=bonanza.model.analysis.TestStatus" json:"status,omitempty"`
 	ExitCode         int64                    `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
 	OutputsReference *core.DecodableReference `protobuf:"bytes,4,opt,name=outputs_reference,json=outputsReference,proto3" json:"outputs_reference,omitempty"`
+	ShardIndex       uint32                   `protobuf:"varint,5,opt,name=shard_index,json=shardIndex,proto3" json:"shard_index,omitempty"`
+	ShardCount       uint32                   `protobuf:"varint,6,opt,name=shard_count,json=shardCount,proto3" json:"shard_count,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -14598,6 +14632,20 @@ func (x *TestResult_Value_Test) GetOutputsReference() *core.DecodableReference {
 		return x.OutputsReference
 	}
 	return nil
+}
+
+func (x *TestResult_Value_Test) GetShardIndex() uint32 {
+	if x != nil {
+		return x.ShardIndex
+	}
+	return 0
+}
+
+func (x *TestResult_Value_Test) GetShardCount() uint32 {
+	if x != nil {
+		return x.ShardCount
+	}
+	return 0
 }
 
 type ModuleExtension_User struct {
@@ -16145,17 +16193,23 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x92\x01\n" +
 	"\x17configuration_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB1\xea\xd7 -\x1a+bonanza.model.analysis.BuildSettingOverrideR\x16configurationReference\x1aV\n" +
 	"\x05Value\x12M\n" +
-	"\x12provider_instances\x18\x01 \x03(\v2\x1e.bonanza.model.starlark.StructR\x11providerInstances\"\xc3\x03\n" +
-	"\x10TargetTestResult\x1a\xd1\x01\n" +
+	"\x12provider_instances\x18\x01 \x03(\v2\x1e.bonanza.model.starlark.StructR\x11providerInstances\"\xa6\x04\n" +
+	"\x10TargetTestResult\x1a\x93\x02\n" +
 	"\x03Key\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x92\x01\n" +
 	"\x17configuration_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB1\xea\xd7 -\x1a+bonanza.model.analysis.BuildSettingOverrideR\x16configurationReference\x12\x1f\n" +
 	"\vtest_filter\x18\x03 \x01(\tR\n" +
-	"testFilter\x1a\xda\x01\n" +
+	"testFilter\x12\x1f\n" +
+	"\vshard_index\x18\x04 \x01(\rR\n" +
+	"shardIndex\x12\x1f\n" +
+	"\vshard_count\x18\x05 \x01(\rR\n" +
+	"shardCount\x1a\xfb\x01\n" +
 	"\x05Value\x12:\n" +
 	"\x06status\x18\x01 \x01(\x0e2\".bonanza.model.analysis.TestStatusR\x06status\x12\x1b\n" +
 	"\texit_code\x18\x02 \x01(\x03R\bexitCode\x12x\n" +
-	"\x11outputs_reference\x18\x03 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xa4\v\n" +
+	"\x11outputs_reference\x18\x03 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\x12\x1f\n" +
+	"\vshard_index\x18\x04 \x01(\rR\n" +
+	"shardIndex\"\xa4\v\n" +
 	"\x0fQueryExpression\x12\x1a\n" +
 	"\apattern\x18\x01 \x01(\tH\x00R\apattern\x12?\n" +
 	"\x03set\x18\x02 \x01(\v2+.bonanza.model.analysis.QueryExpression.SetH\x00R\x03set\x12H\n" +
@@ -16209,21 +16263,26 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x03Key\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x1a\x1f\n" +
 	"\x05Value\x12\x16\n" +
-	"\x06labels\x18\x01 \x03(\tR\x06labels\"\xfe\x03\n" +
+	"\x06labels\x18\x01 \x03(\tR\x06labels\"\xea\x04\n" +
 	"\n" +
-	"TestResult\x1a\xae\x01\n" +
+	"TestResult\x1a\xd8\x01\n" +
 	"\x03Key\x12]\n" +
 	"\x0econfigurations\x18\x01 \x03(\v25.bonanza.model.analysis.BuildResult.Key.ConfigurationR\x0econfigurations\x12'\n" +
 	"\x0ftarget_patterns\x18\x02 \x03(\tR\x0etargetPatterns\x12\x1f\n" +
 	"\vtest_filter\x18\x03 \x01(\tR\n" +
-	"testFilter\x1a\xbe\x02\n" +
+	"testFilter\x12(\n" +
+	"\x10test_tag_filters\x18\x04 \x03(\tR\x0etestTagFilters\x1a\x80\x03\n" +
 	"\x05Value\x12C\n" +
-	"\x05tests\x18\x01 \x03(\v2-.bonanza.model.analysis.TestResult.Value.TestR\x05tests\x1a\xef\x01\n" +
+	"\x05tests\x18\x01 \x03(\v2-.bonanza.model.analysis.TestResult.Value.TestR\x05tests\x1a\xb1\x02\n" +
 	"\x04Test\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12:\n" +
 	"\x06status\x18\x02 \x01(\x0e2\".bonanza.model.analysis.TestStatusR\x06status\x12\x1b\n" +
 	"\texit_code\x18\x03 \x01(\x03R\bexitCode\x12x\n" +
-	"\x11outputs_reference\x18\x04 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xaf\x04\n" +
+	"\x11outputs_reference\x18\x04 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\x12\x1f\n" +
+	"\vshard_index\x18\x05 \x01(\rR\n" +
+	"shardIndex\x12\x1f\n" +
+	"\vshard_count\x18\x06 \x01(\rR\n" +
+	"shardCount\"\xaf\x04\n" +
 	"\x0fModuleExtension\x12\x1e\n" +
 	"\n" +
 	"identifier\x18\x01 \x01(\tR\n" +

@@ -11,6 +11,8 @@ import (
 	"bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
 	"bonanza.build/pkg/model/evaluation"
+	model_filesystem "bonanza.build/pkg/model/filesystem"
+	model_parser "bonanza.build/pkg/model/parser"
 	model_starlark "bonanza.build/pkg/model/starlark"
 	model_analysis_pb "bonanza.build/pkg/proto/model/analysis"
 	model_command_pb "bonanza.build/pkg/proto/model/command"
@@ -23,10 +25,89 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+const testSuiteRuleIdentifier = "@@builtins_core+//:exports.bzl%test_suite"
+
 // testExecGroupName is the name of the execution group in which the test
 // action of a target runs. rule(test = True) declares it implicitly,
 // inheriting the constraints of the default execution group.
 const testExecGroupName = "test"
+
+// getTestRuleAttribute returns a non-configurable rule attribute. Test suite
+// membership and shard counts are loading-phase properties, not select()-able
+// test action settings.
+func getTestRuleAttribute[TReference any](
+	target model_core.Message[*model_starlark_pb.RuleTarget, TReference],
+	definition model_core.Message[*model_starlark_pb.Rule_Definition, TReference],
+	name string,
+) (model_core.Message[*model_starlark_pb.Value, TReference], error) {
+	publicIndex := 0
+	for _, attr := range definition.Message.Attrs {
+		if strings.HasPrefix(attr.Name, "_") {
+			continue
+		}
+		if publicIndex >= len(target.Message.PublicAttrValues) {
+			return model_core.Message[*model_starlark_pb.Value, TReference]{}, fmt.Errorf("rule has fewer values than public attributes")
+		}
+		value := target.Message.PublicAttrValues[publicIndex]
+		publicIndex++
+		if attr.Name != name {
+			continue
+		}
+		if len(value.ValueParts) != 1 || len(value.ValueParts[0].Conditions) != 0 {
+			return model_core.Message[*model_starlark_pb.Value, TReference]{}, fmt.Errorf("test attribute %q must not be configurable", name)
+		}
+		group := value.ValueParts[0]
+		if noMatch, ok := group.NoMatch.(*model_starlark_pb.Select_Group_NoMatchValue); ok {
+			if _, none := noMatch.NoMatchValue.Kind.(*model_starlark_pb.Value_None); !none {
+				return model_core.Nested(target, noMatch.NoMatchValue), nil
+			}
+		}
+		return model_core.Nested(definition, attr.Attr.Default), nil
+	}
+	return model_core.Message[*model_starlark_pb.Value, TReference]{}, fmt.Errorf("rule has no %q attribute", name)
+}
+
+func testShardCount[TReference any](
+	target model_core.Message[*model_starlark_pb.RuleTarget, TReference],
+	definition model_core.Message[*model_starlark_pb.Rule_Definition, TReference],
+) (uint32, error) {
+	value, err := getTestRuleAttribute(target, definition, "shard_count")
+	if err != nil {
+		return 0, err
+	}
+	encoded, ok := value.Message.Kind.(*model_starlark_pb.Value_Int)
+	if !ok || encoded.Int == nil {
+		return 0, errors.New("shard_count is not an integer")
+	}
+	absolute := encoded.Int.AbsoluteValue
+	if len(absolute) > 1 {
+		return 0, errors.New("shard_count must be -1 or between 1 and 50")
+	}
+	var count uint32
+	if len(absolute) == 1 {
+		count = uint32(absolute[0])
+	}
+	if encoded.Int.Negative {
+		if count != 1 {
+			return 0, errors.New("shard_count must be -1 or between 1 and 50")
+		}
+		return 1, nil
+	}
+	if count == 0 || count > 50 {
+		return 0, fmt.Errorf("shard_count %d must be between 1 and 50", count)
+	}
+	return count, nil
+}
+
+func unsupportedTestTag(tags []string) string {
+	for _, tag := range tags {
+		switch tag {
+		case "exclusive", "external", "local", "no-cache", "no-remote", "no-remote-cache", "no-remote-exec", "no-sandbox":
+			return tag
+		}
+	}
+	return ""
+}
 
 // TODO: Derive the timeout from the "timeout" and "size" attributes that
 // rule(test = True) adds implicitly, instead of applying one value to
@@ -89,6 +170,7 @@ func (c *baseComputer[TReference, TMetadata]) getTestExecutionPlatform(
 	e TargetTestResultEnvironment[TReference, TMetadata],
 	targetLabel label.CanonicalLabel,
 	ruleDefinition model_core.Message[*model_starlark_pb.Rule_Definition, TReference],
+	ruleTarget model_core.Message[*model_starlark_pb.RuleTarget, TReference],
 	configurationReference model_core.Message[*model_core_pb.DecodableReference, TReference],
 ) ([]byte, error) {
 	execGroups := ruleDefinition.Message.ExecGroups
@@ -108,7 +190,7 @@ func (c *baseComputer[TReference, TMetadata]) getTestExecutionPlatform(
 		ctx,
 		e,
 		targetLabel.GetCanonicalPackage(),
-		execGroupDefinition.ExecCompatibleWith,
+		append(append([]string(nil), execGroupDefinition.ExecCompatibleWith...), ruleTarget.Message.ExecCompatibleWith...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("invalid constraint values for exec group %#v: %w", testExecGroupName, err)
@@ -137,6 +219,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("invalid target label %#v: %w", key.Message.Label, err)
 	}
 	configurationReference := model_core.Nested(key, key.Message.ConfigurationReference)
+	if key.Message.ShardCount == 0 || key.Message.ShardIndex >= key.Message.ShardCount {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("invalid test shard %d/%d for %#v", key.Message.ShardIndex, key.Message.ShardCount, key.Message.Label)
+	}
 
 	actionEncoder, gotActionEncoder := e.GetActionEncoderObjectValue(&model_analysis_pb.ActionEncoderObject_Key{})
 	directoryCreationParameters, gotDirectoryCreationParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
@@ -150,6 +235,30 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 	}
 	if !ruleDefinition.IsSet() || !ruleDefinition.Message.Test {
 		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("target %#v is not a test target", key.Message.Label)
+	}
+	targetValue := e.GetTargetValue(&model_analysis_pb.Target_Key{Label: key.Message.Label})
+	if !targetValue.IsSet() {
+		return PatchedTargetTestResultValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	ruleTarget := model_core.Nested(targetValue, targetValue.Message.Definition.GetRuleTarget())
+	if tag := unsupportedTestTag(ruleTarget.Message.Tags); tag != "" {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v requires %q execution, which cannot be run on the cached remote test worker", key.Message.Label, tag)
+	}
+	local, err := getTestRuleAttribute(ruleTarget, ruleDefinition, "local")
+	if err != nil {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v: %w", key.Message.Label, err)
+	}
+	if value, ok := local.Message.Kind.(*model_starlark_pb.Value_Bool); !ok {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v: local attribute is not a boolean", key.Message.Label)
+	} else if value.Bool {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v requires local execution, which cannot be run on the cached remote test worker", key.Message.Label)
+	}
+	count, err := testShardCount(ruleTarget, ruleDefinition)
+	if err != nil {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v: %w", key.Message.Label, err)
+	}
+	if count != key.Message.ShardCount {
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v requests %d shards, expected %d", key.Message.Label, key.Message.ShardCount, count)
 	}
 
 	defaultInfo, err := getProviderFromConfiguredTarget(
@@ -170,9 +279,9 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 		return PatchedTargetTestResultValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
-	platformPkixPublicKey, err := c.getTestExecutionPlatform(ctx, e, targetLabel, ruleDefinition, configurationReference)
+	platformPkixPublicKey, err := c.getTestExecutionPlatform(ctx, e, targetLabel, ruleDefinition, ruleTarget, configurationReference)
 	if err != nil {
-		return PatchedTargetTestResultValue[TMetadata]{}, err
+		return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v: %w", key.Message.Label, err)
 	}
 
 	// Extract the test binary and its runfiles from the FilesToRun
@@ -256,10 +365,16 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 	// a writable scratch directory, which input roots currently do
 	// not offer.
 	environment := map[string]string{
-		"RUNFILES_DIR":   runfilesDirectoryPath,
-		"TEST_SRCDIR":    runfilesDirectoryPath,
-		"TEST_TARGET":    targetLabel.String(),
-		"TEST_WORKSPACE": componentMainWorkspaceName.String(),
+		"RUNFILES_DIR":    runfilesDirectoryPath,
+		"TEST_SRCDIR":     runfilesDirectoryPath,
+		"TEST_TARGET":     targetLabel.String(),
+		"TEST_WORKSPACE":  componentMainWorkspaceName.String(),
+		"XML_OUTPUT_FILE": "test.xml",
+	}
+	if count > 1 {
+		environment["TEST_TOTAL_SHARDS"] = fmt.Sprint(count)
+		environment["TEST_SHARD_INDEX"] = fmt.Sprint(key.Message.ShardIndex)
+		environment["TEST_SHARD_STATUS_FILE"] = "test.shard.status"
 	}
 	if testFilter := key.Message.TestFilter; testFilter != "" {
 		environment["TESTBRIDGE_TEST_ONLY"] = testFilter
@@ -275,12 +390,21 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 	if err != nil {
 		return PatchedTargetTestResultValue[TMetadata]{}, err
 	}
-
-	// The test binary writes its log to standard output and standard
-	// error, which the worker captures unconditionally. No output
-	// path pattern is needed.
-	// TODO: Set XML_OUTPUT_FILE and capture the resulting file, so
-	// that structured test results become available.
+	// Capture structured XML when the test binary writes XML_OUTPUT_FILE.
+	// For sharded tests the status file proves that the test framework
+	// actually honored TEST_SHARD_INDEX instead of executing every case in
+	// every shard. PathPattern children must be sorted by name.
+	outputFiles := []*model_command_pb.PathPattern_Child{}
+	if count > 1 {
+		outputFiles = append(outputFiles, &model_command_pb.PathPattern_Child{
+			Name:    "test.shard.status",
+			Pattern: &model_command_pb.PathPattern{},
+		})
+	}
+	outputFiles = append(outputFiles, &model_command_pb.PathPattern_Child{
+		Name:    "test.xml",
+		Pattern: &model_command_pb.PathPattern{},
+	})
 	createdCommand, err := model_core.MarshalAndEncodeDeterministic(
 		model_core.NewPatchedMessage(
 			model_core.NewProtoBinaryMarshaler(&model_command_pb.Command{
@@ -293,6 +417,11 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 				DirectoryCreationParameters: directoryCreationParametersMessage.Message.DirectoryCreationParameters,
 				FileCreationParameters:      fileCreationParametersMessage.Message.FileCreationParameters,
 				WorkingDirectory:            (*path.Trace)(nil).GetUNIXString(),
+				OutputPathPattern: &model_command_pb.PathPattern{
+					Children: &model_command_pb.PathPattern_ChildrenInline{
+						ChildrenInline: &model_command_pb.PathPattern_Children{Children: outputFiles},
+					},
+				},
 			}),
 			environmentVariableList.Patcher,
 		),
@@ -358,6 +487,24 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 	if !actionResult.IsSet() {
 		return PatchedTargetTestResultValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
+	if count > 1 && actionResult.Message.ExitCode == 0 {
+		outputs, err := model_parser.MaybeDereference(ctx, directoryReaders.CommandOutputs, model_core.Nested(actionResult, actionResult.Message.OutputsReference))
+		if err != nil {
+			return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v shard %d/%d: cannot read outputs: %w", key.Message.Label, key.Message.ShardIndex, count, err)
+		}
+		if outputs.Message.OutputRoot == nil {
+			return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v shard %d/%d did not write TEST_SHARD_STATUS_FILE", key.Message.Label, key.Message.ShardIndex, count)
+		}
+		leaves, err := model_filesystem.DirectoryGetLeaves(ctx, directoryReaders.Leaves, model_core.Nested(outputs, outputs.Message.OutputRoot))
+		if err != nil {
+			return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v shard %d/%d: cannot read output files: %w", key.Message.Label, key.Message.ShardIndex, count, err)
+		}
+		if _, found := sort.Find(len(leaves.Message.Files), func(i int) int {
+			return strings.Compare("test.shard.status", leaves.Message.Files[i].Name)
+		}); !found {
+			return PatchedTargetTestResultValue[TMetadata]{}, fmt.Errorf("test %#v shard %d/%d did not write TEST_SHARD_STATUS_FILE", key.Message.Label, key.Message.ShardIndex, count)
+		}
+	}
 
 	status := model_analysis_pb.TestStatus_TEST_STATUS_PASSED
 	if actionResult.Message.ExitCode != 0 {
@@ -368,6 +515,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetTestResultValue(ctx c
 		&model_analysis_pb.TargetTestResult_Value{
 			Status:           status,
 			ExitCode:         actionResult.Message.ExitCode,
+			ShardIndex:       key.Message.ShardIndex,
 			OutputsReference: patchedOutputsReference.Message,
 		},
 		patchedOutputsReference.Patcher,

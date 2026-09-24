@@ -173,16 +173,21 @@ and `bazel run` targets have separate execution paths. No `rules_img`
 image digest or publication parity is claimed without an isolated Bonanza
 worker and a complete C1 graph canary.
 
-`test` builds the targets its patterns match, runs whichever of them are
-declared by a test rule, and prints a per-target summary. A failing test
-is a result rather than a build failure: the client reports it and exits
-with status 3, the way Bazel does. `--test_output` controls whether the
-captured output of a test is printed, and `--test_filter` reaches the
-test binary as `TESTBRIDGE_TEST_ONLY`. There is no `test.xml`, no
-sharding, and no test caching across invocations beyond what the
-evaluation cache already gives. A test carrying `exec_compatible_with`
-is not yet honoured -- the test action resolves its execution platform
-the way a target with an empty exec group does.
+`test` builds the targets its patterns match, expands `test_suite` members
+(including an empty suite's package tests), and reports each test action.
+A failing test exits with Bazel's status 3; an unavailable execution
+platform or a test requiring unsupported local, exclusive, external,
+uncached, or unsandboxed execution fails the invocation rather than
+producing a passing test result. `--test_output` selects which captured
+logs to print, and `--test_filter` reaches test binaries as
+`TESTBRIDGE_TEST_ONLY`. Tests receive `RUNFILES_DIR`, `TEST_SRCDIR`, and
+`XML_OUTPUT_FILE=test.xml`; framework-written XML is captured with the
+test's output artifacts. Tests declaring `shard_count` run one action per
+shard with `TEST_SHARD_INDEX` and `TEST_TOTAL_SHARDS`. A successful shard
+must write `TEST_SHARD_STATUS_FILE`, or the test fails closed.
+`TestResult.Key.test_tag_filters` applies positive-OR and negative-AND
+tag selection before execution; the command-line flag is delivered
+separately. Test result caching remains the evaluation cache.
 
 ## Differences from upstream
 
@@ -217,9 +222,10 @@ evaluation stopping at the first one.
 `--allow_analysis_failures` work. Test rules receive the common test
 attributes (`size`, `timeout`, `flaky`, `local`, `shard_count`) and an
 implicit `"test"` exec group that inherits the default exec group's
-constraints. `test_suite()` builds the tests it references, but
-running them and expanding an empty `tests` attribute to every test in
-the package remain unimplemented.
+constraints. A test target's `exec_compatible_with` is combined with
+those group constraints for its test action. `test_suite()` expands
+explicit members and, for an empty `tests` attribute, tests in its
+package; unsupported local/exclusive execution is deliberately rejected.
 
 **Repository rule APIs.** `repository_ctx.getenv()`, `path.is_dir()`,
 `path.readdir()` and `path.realpath()` are implemented, the last of

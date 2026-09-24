@@ -2186,6 +2186,10 @@ message TargetTestResult {
     // frameworks use to only run a subset of their test cases. This is
     // part of the key because it alters the action that is executed.
     string test_filter = 3;
+    // Zero-based shard number. For an unsharded test, this is zero and
+    // shard_count is one.
+    uint32 shard_index = 4;
+    uint32 shard_count = 5;
   }
 
   message Value {
@@ -2203,6 +2207,9 @@ message TargetTestResult {
           proto_type_name:
             "bonanza.model.command.Outputs";
         }];
+
+    // Index of this shard in a sharded test run.
+    uint32 shard_index = 4;
   }
 }
 
@@ -2334,6 +2341,10 @@ message TestResult {
     // If non-empty, the value of the TESTBRIDGE_TEST_ONLY environment
     // variable that is provided to every test binary.
     string test_filter = 3;
+
+    // Tokens from --test_tag_filters. Positive tokens require at least one
+    // matching tag; negative tokens exclude tests carrying that tag.
+    repeated string test_tag_filters = 4;
   }
 
   message Value {
@@ -2354,6 +2365,11 @@ message TestResult {
             proto_type_name:
               "bonanza.model.command.Outputs";
           }];
+
+      // Zero-based shard number and total number of shards. Each shard
+      // produces a separate result, including its own captured XML.
+      uint32 shard_index = 5;
+      uint32 shard_count = 6;
     }
 
     // The tests that were run, grouped by the configuration they were

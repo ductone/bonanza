@@ -614,9 +614,9 @@ starlark_doc_extract = rule(
 )
 
 def _test_suite_impl(ctx):
-    # Building a test_suite builds the tests it references. Running
-    # them and expanding an empty "tests" attribute to all tests in the
-    # package are left unimplemented.
+    # Building a suite collects explicitly declared tests' outputs. The
+    # test command expands suite members (and empty suites' package tests)
+    # in TestResult, without executing anything during a plain build.
     return [DefaultInfo(files = depset(transitive = [
         t[DefaultInfo].files
         for t in ctx.attr.tests

@@ -254,6 +254,61 @@ log "running //:filtered_test with bonanza_bazel --test_filter"
 }
 log "tests ran and were reported correctly"
 
+# Both shards run with distinct indices, and one deliberately fails.
+# A suite must expand to those tests, not return a vacuous green result.
+log "running sharded test through an explicit test_suite"
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=all //:sharded_suite) \
+  > "$RUN_DIR/test_shards.log" 2>&1
+SHARD_STATUS=$?
+set -e
+[ "$SHARD_STATUS" -eq 3 ] || die "expected test failure status 3 for shard 2, got $SHARD_STATUS"
+grep -q "sharded_test (shard 1/2).*PASSED" "$RUN_DIR/test_shards.log" ||
+  die "shard 1 did not pass"
+grep -q "sharded_test (shard 2/2).*FAILED" "$RUN_DIR/test_shards.log" ||
+  die "shard 2 did not fail"
+grep -q "shard=0/2" "$RUN_DIR/test_shards.log" || die "test did not run shard 0"
+grep -q "shard=1/2" "$RUN_DIR/test_shards.log" || die "test did not run shard 1"
+grep -q "name={NAME}" "$RUN_DIR/test_shards.log" || die "test did not read its runfile"
+grep -q "xml=test.xml" "$RUN_DIR/test_shards.log" || die "test did not receive XML_OUTPUT_FILE"
+grep -q "passing_test.*PASSED" "$RUN_DIR/test_shards.log" ||
+  die "test_suite did not expand its unsharded member"
+
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza //empty_suite:all_tests) \
+  > "$RUN_DIR/test_empty_suite.log" 2>&1
+EMPTY_SUITE_STATUS=$?
+set -e
+[ "$EMPTY_SUITE_STATUS" -eq 3 ] ||
+  die "empty test_suite did not run its package's failing test (status $EMPTY_SUITE_STATUS)"
+grep -q "package_passing_test.*PASSED" "$RUN_DIR/test_empty_suite.log" ||
+  die "empty test_suite did not discover the package's passing test"
+grep -q "package_failing_test.*FAILED" "$RUN_DIR/test_empty_suite.log" ||
+  die "empty test_suite did not discover the package's failing test"
+
+# Declared sharding without an opt-in status file cannot be treated as a pass.
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza //:missing_shard_status_test) \
+  > "$RUN_DIR/test_missing_shard_status.log" 2>&1
+MISSING_SHARD_STATUS=$?
+set -e
+[ "$MISSING_SHARD_STATUS" -ne 0 ] || die "test without shard status reported green"
+grep -q "did not write TEST_SHARD_STATUS_FILE" "$RUN_DIR/test_missing_shard_status.log" ||
+  die "missing shard status was not diagnosed"
+
+for target in unsupported_local_test unschedulable_test; do
+  set +e
+  (cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza "//:$target") \
+    > "$RUN_DIR/test_$target.log" 2>&1
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || die "test $target incorrectly reported green"
+done
+grep -q 'requires "local" execution' "$RUN_DIR/test_unsupported_local_test.log" ||
+  die "unsupported local test did not fail closed"
+grep -q "execution platform" "$RUN_DIR/test_unschedulable_test.log" ||
+  die "unschedulable test did not identify its execution platform"
+
 # --- run a target -------------------------------------------------------
 # "bonanza_bazel run" materializes the executable together with its
 # runfiles directory and launches it. The script that is launched
