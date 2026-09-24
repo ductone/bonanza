@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
-	"math"
 	"strings"
+	"time"
 
+	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	remoteexecution "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/google/uuid"
 	"google.golang.org/genproto/googleapis/bytestream"
@@ -21,8 +23,10 @@ import (
 )
 
 const (
-	transferChunkSize  = 64 << 10
-	resourceNameHeader = "build.bazel.remote.execution.v2.resource-name"
+	transferChunkSize   = 64 << 10
+	resourceNameHeader  = "build.bazel.remote.execution.v2.resource-name"
+	maxBufferedBlobSize = 64 << 20 // Trees are decoded in memory; remote digests must not cause unbounded allocation.
+	maxWaitReconnects   = 3
 )
 
 // Client is the REv2 boundary used by Executor. It deliberately accepts only
@@ -39,6 +43,8 @@ type Client interface {
 type client struct {
 	instanceName string
 	execution    remoteexecution.ExecutionClient
+	operations   longrunningpb.OperationsClient
+	capabilities remoteexecution.CapabilitiesClient
 	cas          remoteexecution.ContentAddressableStorageClient
 	byteStream   bytestream.ByteStreamClient
 }
@@ -48,14 +54,27 @@ func NewClient(connection grpc.ClientConnInterface, instanceName string) Client 
 	return &client{
 		instanceName: instanceName,
 		execution:    remoteexecution.NewExecutionClient(connection),
+		operations:   longrunningpb.NewOperationsClient(connection),
+		capabilities: remoteexecution.NewCapabilitiesClient(connection),
 		cas:          remoteexecution.NewContentAddressableStorageClient(connection),
 		byteStream:   bytestream.NewByteStreamClient(connection),
 	}
 }
 
 func (c *client) CheckReadiness(ctx context.Context) error {
+	capabilities, err := c.capabilities.GetCapabilities(ctx, &remoteexecution.GetCapabilitiesRequest{
+		InstanceName: c.instanceName,
+	})
+	if err != nil {
+		return fmt.Errorf("check REAPI execution capabilities: %w", err)
+	}
+	execution := capabilities.GetExecutionCapabilities()
+	if !execution.GetExecEnabled() || !supportsSHA256(execution.GetDigestFunctions(), execution.GetDigestFunction()) ||
+		!supportsSHA256(capabilities.GetCacheCapabilities().GetDigestFunctions(), remoteexecution.DigestFunction_UNKNOWN) {
+		return status.Error(codes.FailedPrecondition, "REAPI endpoint does not expose SHA-256 execution and CAS for this instance")
+	}
 	emptyDigest := newDigest(nil)
-	_, err := c.cas.FindMissingBlobs(ctx, &remoteexecution.FindMissingBlobsRequest{
+	missing, err := c.cas.FindMissingBlobs(ctx, &remoteexecution.FindMissingBlobsRequest{
 		InstanceName:   c.instanceName,
 		BlobDigests:    []*remoteexecution.Digest{emptyDigest},
 		DigestFunction: remoteexecution.DigestFunction_SHA256,
@@ -63,7 +82,22 @@ func (c *client) CheckReadiness(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("check REAPI CAS readiness: %w", err)
 	}
+	if missing == nil {
+		return status.Error(codes.DataLoss, "REAPI CAS returned no readiness response")
+	}
 	return nil
+}
+
+func supportsSHA256(functions []remoteexecution.DigestFunction_Value, legacy remoteexecution.DigestFunction_Value) bool {
+	if len(functions) == 0 {
+		return legacy == remoteexecution.DigestFunction_SHA256
+	}
+	for _, function := range functions {
+		if function == remoteexecution.DigestFunction_SHA256 {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *client) UploadBlob(ctx context.Context, digest *remoteexecution.Digest, contents io.Reader) error {
@@ -81,6 +115,9 @@ func (c *client) UploadBlob(ctx context.Context, digest *remoteexecution.Digest,
 	})
 	if err != nil {
 		return fmt.Errorf("find missing REAPI blob %s/%d: %w", digest.Hash, digest.SizeBytes, err)
+	}
+	if missing == nil {
+		return status.Error(codes.DataLoss, "REAPI CAS returned no FindMissingBlobs response")
 	}
 	if !containsDigest(missing.MissingBlobDigests, digest) {
 		return nil
@@ -172,8 +209,8 @@ func (c *client) ReadBlob(ctx context.Context, digest *remoteexecution.Digest) (
 	if err := validateDigest(digest); err != nil {
 		return nil, err
 	}
-	if digest.SizeBytes > math.MaxInt {
-		return nil, status.Errorf(codes.ResourceExhausted, "REAPI blob %s is too large to import into memory", digest.Hash)
+	if digest.SizeBytes > maxBufferedBlobSize {
+		return nil, status.Errorf(codes.ResourceExhausted, "REAPI blob %s exceeds the %d-byte in-memory import limit", digest.Hash, maxBufferedBlobSize)
 	}
 	reader, err := c.OpenBlob(ctx, digest)
 	if err != nil {
@@ -254,13 +291,61 @@ func (c *client) Execute(ctx context.Context, request *remoteexecution.ExecuteRe
 	if err != nil {
 		return nil, fmt.Errorf("start REAPI execution: %w", err)
 	}
+	var operationName string
+	reconnects := 0
 	for {
-		operation, err := stream.Recv()
-		if err == io.EOF {
-			return nil, status.Error(codes.Internal, "REAPI Execute stream ended without a completed operation")
+		operation, recvErr := stream.Recv()
+		if recvErr != nil {
+			if ctx.Err() != nil {
+				c.cancelOperation(ctx, operationName)
+				return nil, executionFailureStatus(ctx.Err())
+			}
+			// A named operation can be resumed without submitting the action a
+			// second time. Never retry Execute after an ambiguous stream failure.
+			if operationName != "" && reconnects < maxWaitReconnects &&
+				(errors.Is(recvErr, io.EOF) || status.Code(recvErr) == codes.Unavailable) {
+				resumed := false
+				for reconnects < maxWaitReconnects {
+					reconnects++
+					timer := time.NewTimer(time.Duration(reconnects) * 100 * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						c.cancelOperation(ctx, operationName)
+						return nil, executionFailureStatus(ctx.Err())
+					case <-timer.C:
+					}
+					stream, err = c.execution.WaitExecution(ctx, &remoteexecution.WaitExecutionRequest{Name: operationName})
+					if err == nil {
+						resumed = true
+						break
+					}
+					recvErr = err
+					if ctx.Err() != nil {
+						c.cancelOperation(ctx, operationName)
+						return nil, executionFailureStatus(ctx.Err())
+					}
+					if status.Code(err) != codes.Unavailable {
+						break
+					}
+				}
+				if resumed {
+					continue
+				}
+			}
+			if errors.Is(recvErr, io.EOF) {
+				return nil, status.Error(codes.Internal, "REAPI Execute stream ended without a completed operation")
+			}
+			return nil, fmt.Errorf("receive REAPI execution update: %w", recvErr)
 		}
-		if err != nil {
-			return nil, fmt.Errorf("receive REAPI execution update: %w", err)
+		if operation == nil {
+			return nil, status.Error(codes.DataLoss, "REAPI execution returned a nil operation")
+		}
+		if operationName != "" && operation.GetName() != "" && operation.GetName() != operationName {
+			return nil, status.Errorf(codes.DataLoss, "REAPI execution changed operation name from %q to %q", operationName, operation.GetName())
+		}
+		if operation.GetName() != "" {
+			operationName = operation.GetName()
 		}
 		if !operation.GetDone() {
 			continue
@@ -278,6 +363,18 @@ func (c *client) Execute(ctx context.Context, request *remoteexecution.ExecuteRe
 		}
 		return &response, nil
 	}
+}
+
+// CancelOperation is best effort and may be unimplemented by a REAPI server.
+// Use the same authenticated connection, but a fresh bounded context: the
+// execution context is already canceled when cleanup becomes necessary.
+func (c *client) cancelOperation(ctx context.Context, name string) {
+	if name == "" {
+		return
+	}
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_, _ = c.operations.CancelOperation(cancelCtx, &longrunningpb.CancelOperationRequest{Name: name})
 }
 
 func (c *client) readResourceName(digest *remoteexecution.Digest) string {

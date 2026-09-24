@@ -3,6 +3,7 @@ package reapi
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -203,5 +204,30 @@ func TestNewExecutorRejectsReservedTestQueue(t *testing.T) {
 	)
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("NewExecutor() error = %v; want InvalidArgument", err)
+	}
+}
+
+type blockingREAPIClient struct {
+	fakeREAPIClient
+}
+
+func (c *blockingREAPIClient) Execute(ctx context.Context, request *remoteexecution.ExecuteRequest) (*remoteexecution.ExecuteResponse, error) {
+	c.executeRequest = request
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestExecuteREAPIPassesInstanceAndEnforcesDeadline(t *testing.T) {
+	client := &blockingREAPIClient{}
+	executor := &executor{client: client, instanceName: "c1"}
+	_, _, err := executor.executeREAPI(t.Context(), newDigest(nil), 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("executeREAPI() error = %v; want deadline exceeded", err)
+	}
+	if status.Code(executionFailureStatus(err)) != codes.DeadlineExceeded {
+		t.Fatalf("executionFailureStatus() = %v; want DeadlineExceeded", executionFailureStatus(err))
+	}
+	if client.executeRequest.InstanceName != "c1" || client.executeRequest.DigestFunction != remoteexecution.DigestFunction_SHA256 {
+		t.Fatalf("Execute request = %#v; want c1 instance with SHA256", client.executeRequest)
 	}
 }
