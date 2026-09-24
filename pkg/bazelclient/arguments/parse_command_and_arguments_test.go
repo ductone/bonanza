@@ -53,6 +53,40 @@ func TestParseCommandAndArguments(t *testing.T) {
 			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
 		})
 
+		t.Run("ModuleFlagAliases", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build",
+				"--incompatible_default_to_explicit_init_py",
+				"--noincompatible_default_to_explicit_init_py",
+				"--string_alias=value",
+				"//...",
+			})
+			require.NoError(t, err)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+				{Label: "noincompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+				{Label: "string_alias", Value: "value", IsAlias: true, HasExplicitValue: true},
+			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
+		})
+
+		t.Run("ReleaseStampAndEmbedLabel", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build", "--stamp", "--nostamp", "--stamp=1", "--embed_label=deadbeef", "//:binary",
+			})
+			require.NoError(t, err)
+			build := command.(*arguments.BuildCommand)
+			require.Equal(t, "deadbeef", build.BuildFlags.EmbedLabel)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "true"},
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "false"},
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "true"},
+			}, build.BuildSettingOverrides)
+			_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build", "--stamp=perhaps", "//:binary",
+			})
+			require.ErrorContains(t, err, "stamp")
+		})
+
 		t.Run("BuildSettingOverrideNegatedWithValue", func(t *testing.T) {
 			_, err := arguments.ParseCommandAndArguments(
 				arguments.ConfigurationDirectives{},
@@ -617,4 +651,46 @@ func TestParseCommandAndArguments(t *testing.T) {
 			require.EqualError(t, err, "config expansion for configuration directive \"version:foo\" contains a cycle")
 		})
 	})
+}
+
+func TestQueryOutputFlagIsScopedToQueryCommands(t *testing.T) {
+	query, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"query", "--output=label_kind", "//pkg:all",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_LabelKind), query.(*arguments.QueryCommand).QueryFlags.Output)
+
+	cquery, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"cquery", "--output=files", "--platforms=//platforms:exec", "--incompatible_default_to_explicit_init_py", "set(//pkg:target)",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_Files), cquery.(*arguments.CqueryCommand).CqueryFlags.Output)
+	require.Equal(t, "//platforms:exec", cquery.(*arguments.CqueryCommand).BuildFlags.Platforms)
+	require.Equal(t, []arguments.BuildSettingOverride{
+		{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+	}, cquery.(*arguments.CqueryCommand).BuildSettingOverrides)
+
+	_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"build", "--output=files", "//pkg:target",
+	})
+	require.ErrorContains(t, err, "does not apply")
+}
+
+func TestC1EnvironmentFlagsAndConfigExpansion(t *testing.T) {
+	cmd, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{
+		"common":    {{"--announce_rc"}},
+		"build":     {{"--action_env=DO_NOT_TRACK=1"}, {"--repo_env=DO_NOT_TRACK=1"}},
+		"common:ci": {{"--color=no"}},
+		"build:ci":  {{"--action_env=DO_NOT_TRACK=2"}},
+	}, []string{"cquery", "--config=ci", "--output=files", "//bazel/python:check.py"})
+	require.NoError(t, err)
+	cquery := cmd.(*arguments.CqueryCommand)
+	require.True(t, cquery.CommonFlags.AnnounceRc)
+	require.Equal(t, []string{"DO_NOT_TRACK=1", "DO_NOT_TRACK=2"}, cquery.BuildFlags.ActionEnv)
+	require.Equal(t, []string{"DO_NOT_TRACK=1"}, cquery.BuildFlags.RepoEnv)
+	require.Equal(t, arguments.Color(arguments.Color_No), cquery.CommonFlags.Color)
+	require.Contains(t, cquery.RCAnnouncements, "build:ci: --action_env=DO_NOT_TRACK=<redacted>")
+	require.NotContains(t, cquery.RCAnnouncements, "build:ci: --action_env=DO_NOT_TRACK=2")
+	require.Contains(t, cquery.RCAnnouncements, "build: --repo_env=DO_NOT_TRACK=<redacted>")
+	require.Contains(t, cquery.RCAnnouncements, "common:ci: --color=no")
 }

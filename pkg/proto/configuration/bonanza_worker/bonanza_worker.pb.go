@@ -29,6 +29,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ReapiRunnerConfiguration_Queue int32
+
+const (
+	ReapiRunnerConfiguration_QUEUE_UNSPECIFIED ReapiRunnerConfiguration_Queue = 0
+	ReapiRunnerConfiguration_QUEUE_SMALL       ReapiRunnerConfiguration_Queue = 1
+	ReapiRunnerConfiguration_QUEUE_LINK        ReapiRunnerConfiguration_Queue = 2
+)
+
+// Enum value maps for ReapiRunnerConfiguration_Queue.
+var (
+	ReapiRunnerConfiguration_Queue_name = map[int32]string{
+		0: "QUEUE_UNSPECIFIED",
+		1: "QUEUE_SMALL",
+		2: "QUEUE_LINK",
+	}
+	ReapiRunnerConfiguration_Queue_value = map[string]int32{
+		"QUEUE_UNSPECIFIED": 0,
+		"QUEUE_SMALL":       1,
+		"QUEUE_LINK":        2,
+	}
+)
+
+func (x ReapiRunnerConfiguration_Queue) Enum() *ReapiRunnerConfiguration_Queue {
+	p := new(ReapiRunnerConfiguration_Queue)
+	*p = x
+	return p
+}
+
+func (x ReapiRunnerConfiguration_Queue) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ReapiRunnerConfiguration_Queue) Descriptor() protoreflect.EnumDescriptor {
+	return file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_enumTypes[0].Descriptor()
+}
+
+func (ReapiRunnerConfiguration_Queue) Type() protoreflect.EnumType {
+	return &file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_enumTypes[0]
+}
+
+func (x ReapiRunnerConfiguration_Queue) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ReapiRunnerConfiguration_Queue.Descriptor instead.
+func (ReapiRunnerConfiguration_Queue) EnumDescriptor() ([]byte, []int) {
+	return file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDescGZIP(), []int{3, 0}
+}
+
 type ApplicationConfiguration struct {
 	state                  protoimpl.MessageState            `protogen:"open.v1"`
 	Global                 *global.Configuration             `protobuf:"bytes,1,opt,name=global,proto3" json:"global,omitempty"`
@@ -39,6 +88,7 @@ type ApplicationConfiguration struct {
 	LocalObjectStore       *local.StoreConfiguration         `protobuf:"bytes,7,opt,name=local_object_store,json=localObjectStore,proto3" json:"local_object_store,omitempty"`
 	ParsedObjectPool       *parser.ParsedObjectPool          `protobuf:"bytes,6,opt,name=parsed_object_pool,json=parsedObjectPool,proto3" json:"parsed_object_pool,omitempty"`
 	ObjectStoreConcurrency int64                             `protobuf:"varint,8,opt,name=object_store_concurrency,json=objectStoreConcurrency,proto3" json:"object_store_concurrency,omitempty"`
+	ReapiRunners           []*ReapiRunnerConfiguration       `protobuf:"bytes,9,rep,name=reapi_runners,json=reapiRunners,proto3" json:"reapi_runners,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -127,6 +177,13 @@ func (x *ApplicationConfiguration) GetObjectStoreConcurrency() int64 {
 		return x.ObjectStoreConcurrency
 	}
 	return 0
+}
+
+func (x *ApplicationConfiguration) GetReapiRunners() []*ReapiRunnerConfiguration {
+	if x != nil {
+		return x.ReapiRunners
+	}
+	return nil
 }
 
 type BuildDirectoryConfiguration struct {
@@ -345,11 +402,119 @@ func (x *RunnerConfiguration) GetBuildDirectoryOwnerGroupId() uint32 {
 	return 0
 }
 
+type ReapiRunnerConfiguration struct {
+	state                     protoimpl.MessageState                       `protogen:"open.v1"`
+	ReapiGrpcClient           *grpc.ClientConfiguration                    `protobuf:"bytes,1,opt,name=reapi_grpc_client,json=reapiGrpcClient,proto3" json:"reapi_grpc_client,omitempty"`
+	InstanceName              string                                       `protobuf:"bytes,2,opt,name=instance_name,json=instanceName,proto3" json:"instance_name,omitempty"`
+	Queue                     ReapiRunnerConfiguration_Queue               `protobuf:"varint,3,opt,name=queue,proto3,enum=bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration_Queue" json:"queue,omitempty"`
+	Concurrency               uint64                                       `protobuf:"varint,4,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
+	PlatformPrivateKeys       []string                                     `protobuf:"bytes,5,rep,name=platform_private_keys,json=platformPrivateKeys,proto3" json:"platform_private_keys,omitempty"`
+	ClientCertificateVerifier *x509.ClientCertificateVerifierConfiguration `protobuf:"bytes,6,opt,name=client_certificate_verifier,json=clientCertificateVerifier,proto3" json:"client_certificate_verifier,omitempty"`
+	SizeClass                 uint32                                       `protobuf:"varint,7,opt,name=size_class,json=sizeClass,proto3" json:"size_class,omitempty"`
+	IsLargestSizeClass        bool                                         `protobuf:"varint,8,opt,name=is_largest_size_class,json=isLargestSizeClass,proto3" json:"is_largest_size_class,omitempty"`
+	WorkerId                  map[string]string                            `protobuf:"bytes,9,rep,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *ReapiRunnerConfiguration) Reset() {
+	*x = ReapiRunnerConfiguration{}
+	mi := &file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReapiRunnerConfiguration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReapiRunnerConfiguration) ProtoMessage() {}
+
+func (x *ReapiRunnerConfiguration) ProtoReflect() protoreflect.Message {
+	mi := &file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReapiRunnerConfiguration.ProtoReflect.Descriptor instead.
+func (*ReapiRunnerConfiguration) Descriptor() ([]byte, []int) {
+	return file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ReapiRunnerConfiguration) GetReapiGrpcClient() *grpc.ClientConfiguration {
+	if x != nil {
+		return x.ReapiGrpcClient
+	}
+	return nil
+}
+
+func (x *ReapiRunnerConfiguration) GetInstanceName() string {
+	if x != nil {
+		return x.InstanceName
+	}
+	return ""
+}
+
+func (x *ReapiRunnerConfiguration) GetQueue() ReapiRunnerConfiguration_Queue {
+	if x != nil {
+		return x.Queue
+	}
+	return ReapiRunnerConfiguration_QUEUE_UNSPECIFIED
+}
+
+func (x *ReapiRunnerConfiguration) GetConcurrency() uint64 {
+	if x != nil {
+		return x.Concurrency
+	}
+	return 0
+}
+
+func (x *ReapiRunnerConfiguration) GetPlatformPrivateKeys() []string {
+	if x != nil {
+		return x.PlatformPrivateKeys
+	}
+	return nil
+}
+
+func (x *ReapiRunnerConfiguration) GetClientCertificateVerifier() *x509.ClientCertificateVerifierConfiguration {
+	if x != nil {
+		return x.ClientCertificateVerifier
+	}
+	return nil
+}
+
+func (x *ReapiRunnerConfiguration) GetSizeClass() uint32 {
+	if x != nil {
+		return x.SizeClass
+	}
+	return 0
+}
+
+func (x *ReapiRunnerConfiguration) GetIsLargestSizeClass() bool {
+	if x != nil {
+		return x.IsLargestSizeClass
+	}
+	return false
+}
+
+func (x *ReapiRunnerConfiguration) GetWorkerId() map[string]string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return nil
+}
+
 var File_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto protoreflect.FileDescriptor
 
 const file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDesc = "" +
 	"\n" +
-	"Ibonanza.build/pkg/proto/configuration/bonanza_worker/bonanza_worker.proto\x12$bonanza.configuration.bonanza_worker\x1a?bonanza.build/pkg/proto/configuration/model/parser/parser.proto\x1aFbonanza.build/pkg/proto/configuration/storage/object/local/local.proto\x1a\\github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/filesystem/filesystem.proto\x1aagithub.com/buildbarn/bb-remote-execution/pkg/proto/configuration/filesystem/virtual/virtual.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/x509/x509.proto\x1a\x1egoogle/protobuf/duration.proto\"\xff\x05\n" +
+	"Ibonanza.build/pkg/proto/configuration/bonanza_worker/bonanza_worker.proto\x12$bonanza.configuration.bonanza_worker\x1a?bonanza.build/pkg/proto/configuration/model/parser/parser.proto\x1aFbonanza.build/pkg/proto/configuration/storage/object/local/local.proto\x1a\\github.com/buildbarn/bb-remote-execution/pkg/proto/configuration/filesystem/filesystem.proto\x1aagithub.com/buildbarn/bb-remote-execution/pkg/proto/configuration/filesystem/virtual/virtual.proto\x1aKgithub.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto\x1aGgithub.com/buildbarn/bb-storage/pkg/proto/configuration/x509/x509.proto\x1a\x1egoogle/protobuf/duration.proto\"\xe4\x06\n" +
 	"\x18ApplicationConfiguration\x12E\n" +
 	"\x06global\x18\x01 \x01(\v2-.buildbarn.configuration.global.ConfigurationR\x06global\x12a\n" +
 	"\x13storage_grpc_client\x18\x02 \x01(\v21.buildbarn.configuration.grpc.ClientConfigurationR\x11storageGrpcClient\x12e\n" +
@@ -358,7 +523,8 @@ const file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_p
 	"\tfile_pool\x18\x05 \x01(\v29.buildbarn.configuration.filesystem.FilePoolConfigurationR\bfilePool\x12l\n" +
 	"\x12local_object_store\x18\a \x01(\v2>.bonanza.configuration.storage.object.local.StoreConfigurationR\x10localObjectStore\x12b\n" +
 	"\x12parsed_object_pool\x18\x06 \x01(\v24.bonanza.configuration.model.parser.ParsedObjectPoolR\x10parsedObjectPool\x128\n" +
-	"\x18object_store_concurrency\x18\b \x01(\x03R\x16objectStoreConcurrency\"\xc8\x01\n" +
+	"\x18object_store_concurrency\x18\b \x01(\x03R\x16objectStoreConcurrency\x12c\n" +
+	"\rreapi_runners\x18\t \x03(\v2>.bonanza.configuration.bonanza_worker.ReapiRunnerConfigurationR\freapiRunners\"\xc8\x01\n" +
 	"\x1bBuildDirectoryConfiguration\x12S\n" +
 	"\arunners\x18\x01 \x03(\v29.bonanza.configuration.bonanza_worker.RunnerConfigurationR\arunners\x12T\n" +
 	"\x05mount\x18\x02 \x01(\v2>.buildbarn.configuration.filesystem.virtual.MountConfigurationR\x05mount\"\xd7\n" +
@@ -387,7 +553,26 @@ const file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_p
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aG\n" +
 	"\x19EnvironmentVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B6Z4bonanza.build/pkg/proto/configuration/bonanza_workerb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x92\x06\n" +
+	"\x18ReapiRunnerConfiguration\x12]\n" +
+	"\x11reapi_grpc_client\x18\x01 \x01(\v21.buildbarn.configuration.grpc.ClientConfigurationR\x0freapiGrpcClient\x12#\n" +
+	"\rinstance_name\x18\x02 \x01(\tR\finstanceName\x12Z\n" +
+	"\x05queue\x18\x03 \x01(\x0e2D.bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.QueueR\x05queue\x12 \n" +
+	"\vconcurrency\x18\x04 \x01(\x04R\vconcurrency\x122\n" +
+	"\x15platform_private_keys\x18\x05 \x03(\tR\x13platformPrivateKeys\x12\x84\x01\n" +
+	"\x1bclient_certificate_verifier\x18\x06 \x01(\v2D.buildbarn.configuration.x509.ClientCertificateVerifierConfigurationR\x19clientCertificateVerifier\x12\x1d\n" +
+	"\n" +
+	"size_class\x18\a \x01(\rR\tsizeClass\x121\n" +
+	"\x15is_largest_size_class\x18\b \x01(\bR\x12isLargestSizeClass\x12i\n" +
+	"\tworker_id\x18\t \x03(\v2L.bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.WorkerIdEntryR\bworkerId\x1a;\n" +
+	"\rWorkerIdEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"?\n" +
+	"\x05Queue\x12\x15\n" +
+	"\x11QUEUE_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vQUEUE_SMALL\x10\x01\x12\x0e\n" +
+	"\n" +
+	"QUEUE_LINK\x10\x02B6Z4bonanza.build/pkg/proto/configuration/bonanza_workerb\x06proto3"
 
 var (
 	file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDescOnce sync.Once
@@ -401,43 +586,52 @@ func file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_pr
 	return file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDescData
 }
 
-var file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_goTypes = []any{
-	(*ApplicationConfiguration)(nil),                    // 0: bonanza.configuration.bonanza_worker.ApplicationConfiguration
-	(*BuildDirectoryConfiguration)(nil),                 // 1: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration
-	(*RunnerConfiguration)(nil),                         // 2: bonanza.configuration.bonanza_worker.RunnerConfiguration
-	nil,                                                 // 3: bonanza.configuration.bonanza_worker.RunnerConfiguration.WorkerIdEntry
-	nil,                                                 // 4: bonanza.configuration.bonanza_worker.RunnerConfiguration.EnvironmentVariablesEntry
-	(*global.Configuration)(nil),                        // 5: buildbarn.configuration.global.Configuration
-	(*grpc.ClientConfiguration)(nil),                    // 6: buildbarn.configuration.grpc.ClientConfiguration
-	(*filesystem.FilePoolConfiguration)(nil),            // 7: buildbarn.configuration.filesystem.FilePoolConfiguration
-	(*local.StoreConfiguration)(nil),                    // 8: bonanza.configuration.storage.object.local.StoreConfiguration
-	(*parser.ParsedObjectPool)(nil),                     // 9: bonanza.configuration.model.parser.ParsedObjectPool
-	(*virtual.MountConfiguration)(nil),                  // 10: buildbarn.configuration.filesystem.virtual.MountConfiguration
-	(*x509.ClientCertificateVerifierConfiguration)(nil), // 11: buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
-	(*durationpb.Duration)(nil),                         // 12: google.protobuf.Duration
+	(ReapiRunnerConfiguration_Queue)(0),      // 0: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.Queue
+	(*ApplicationConfiguration)(nil),         // 1: bonanza.configuration.bonanza_worker.ApplicationConfiguration
+	(*BuildDirectoryConfiguration)(nil),      // 2: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration
+	(*RunnerConfiguration)(nil),              // 3: bonanza.configuration.bonanza_worker.RunnerConfiguration
+	(*ReapiRunnerConfiguration)(nil),         // 4: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration
+	nil,                                      // 5: bonanza.configuration.bonanza_worker.RunnerConfiguration.WorkerIdEntry
+	nil,                                      // 6: bonanza.configuration.bonanza_worker.RunnerConfiguration.EnvironmentVariablesEntry
+	nil,                                      // 7: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.WorkerIdEntry
+	(*global.Configuration)(nil),             // 8: buildbarn.configuration.global.Configuration
+	(*grpc.ClientConfiguration)(nil),         // 9: buildbarn.configuration.grpc.ClientConfiguration
+	(*filesystem.FilePoolConfiguration)(nil), // 10: buildbarn.configuration.filesystem.FilePoolConfiguration
+	(*local.StoreConfiguration)(nil),         // 11: bonanza.configuration.storage.object.local.StoreConfiguration
+	(*parser.ParsedObjectPool)(nil),          // 12: bonanza.configuration.model.parser.ParsedObjectPool
+	(*virtual.MountConfiguration)(nil),       // 13: buildbarn.configuration.filesystem.virtual.MountConfiguration
+	(*x509.ClientCertificateVerifierConfiguration)(nil), // 14: buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
+	(*durationpb.Duration)(nil),                         // 15: google.protobuf.Duration
 }
 var file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_depIdxs = []int32{
-	5,  // 0: bonanza.configuration.bonanza_worker.ApplicationConfiguration.global:type_name -> buildbarn.configuration.global.Configuration
-	6,  // 1: bonanza.configuration.bonanza_worker.ApplicationConfiguration.storage_grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
-	6,  // 2: bonanza.configuration.bonanza_worker.ApplicationConfiguration.scheduler_grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
-	1,  // 3: bonanza.configuration.bonanza_worker.ApplicationConfiguration.build_directories:type_name -> bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration
-	7,  // 4: bonanza.configuration.bonanza_worker.ApplicationConfiguration.file_pool:type_name -> buildbarn.configuration.filesystem.FilePoolConfiguration
-	8,  // 5: bonanza.configuration.bonanza_worker.ApplicationConfiguration.local_object_store:type_name -> bonanza.configuration.storage.object.local.StoreConfiguration
-	9,  // 6: bonanza.configuration.bonanza_worker.ApplicationConfiguration.parsed_object_pool:type_name -> bonanza.configuration.model.parser.ParsedObjectPool
-	2,  // 7: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration.runners:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration
-	10, // 8: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration.mount:type_name -> buildbarn.configuration.filesystem.virtual.MountConfiguration
-	6,  // 9: bonanza.configuration.bonanza_worker.RunnerConfiguration.endpoint:type_name -> buildbarn.configuration.grpc.ClientConfiguration
-	11, // 10: bonanza.configuration.bonanza_worker.RunnerConfiguration.client_certificate_verifier:type_name -> buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
-	12, // 11: bonanza.configuration.bonanza_worker.RunnerConfiguration.maximum_execution_timeout_compensation:type_name -> google.protobuf.Duration
-	12, // 12: bonanza.configuration.bonanza_worker.RunnerConfiguration.maximum_writable_file_upload_delay:type_name -> google.protobuf.Duration
-	3,  // 13: bonanza.configuration.bonanza_worker.RunnerConfiguration.worker_id:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration.WorkerIdEntry
-	4,  // 14: bonanza.configuration.bonanza_worker.RunnerConfiguration.environment_variables:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration.EnvironmentVariablesEntry
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	8,  // 0: bonanza.configuration.bonanza_worker.ApplicationConfiguration.global:type_name -> buildbarn.configuration.global.Configuration
+	9,  // 1: bonanza.configuration.bonanza_worker.ApplicationConfiguration.storage_grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
+	9,  // 2: bonanza.configuration.bonanza_worker.ApplicationConfiguration.scheduler_grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
+	2,  // 3: bonanza.configuration.bonanza_worker.ApplicationConfiguration.build_directories:type_name -> bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration
+	10, // 4: bonanza.configuration.bonanza_worker.ApplicationConfiguration.file_pool:type_name -> buildbarn.configuration.filesystem.FilePoolConfiguration
+	11, // 5: bonanza.configuration.bonanza_worker.ApplicationConfiguration.local_object_store:type_name -> bonanza.configuration.storage.object.local.StoreConfiguration
+	12, // 6: bonanza.configuration.bonanza_worker.ApplicationConfiguration.parsed_object_pool:type_name -> bonanza.configuration.model.parser.ParsedObjectPool
+	4,  // 7: bonanza.configuration.bonanza_worker.ApplicationConfiguration.reapi_runners:type_name -> bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration
+	3,  // 8: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration.runners:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration
+	13, // 9: bonanza.configuration.bonanza_worker.BuildDirectoryConfiguration.mount:type_name -> buildbarn.configuration.filesystem.virtual.MountConfiguration
+	9,  // 10: bonanza.configuration.bonanza_worker.RunnerConfiguration.endpoint:type_name -> buildbarn.configuration.grpc.ClientConfiguration
+	14, // 11: bonanza.configuration.bonanza_worker.RunnerConfiguration.client_certificate_verifier:type_name -> buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
+	15, // 12: bonanza.configuration.bonanza_worker.RunnerConfiguration.maximum_execution_timeout_compensation:type_name -> google.protobuf.Duration
+	15, // 13: bonanza.configuration.bonanza_worker.RunnerConfiguration.maximum_writable_file_upload_delay:type_name -> google.protobuf.Duration
+	5,  // 14: bonanza.configuration.bonanza_worker.RunnerConfiguration.worker_id:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration.WorkerIdEntry
+	6,  // 15: bonanza.configuration.bonanza_worker.RunnerConfiguration.environment_variables:type_name -> bonanza.configuration.bonanza_worker.RunnerConfiguration.EnvironmentVariablesEntry
+	9,  // 16: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.reapi_grpc_client:type_name -> buildbarn.configuration.grpc.ClientConfiguration
+	0,  // 17: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.queue:type_name -> bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.Queue
+	14, // 18: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.client_certificate_verifier:type_name -> buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
+	7,  // 19: bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.worker_id:type_name -> bonanza.configuration.bonanza_worker.ReapiRunnerConfiguration.WorkerIdEntry
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_init() }
@@ -450,13 +644,14 @@ func file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_pr
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDesc), len(file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_goTypes,
 		DependencyIndexes: file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_depIdxs,
+		EnumInfos:         file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_enumTypes,
 		MessageInfos:      file_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto_msgTypes,
 	}.Build()
 	File_bonanza_build_pkg_proto_configuration_bonanza_worker_bonanza_worker_proto = out.File

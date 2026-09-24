@@ -8,8 +8,10 @@ import (
 // setting for which an override was provided on the command line or in
 // a bazelrc file, and the value that is assigned to it.
 type BuildSettingOverride struct {
-	Label string
-	Value string
+	Label            string
+	Value            string
+	IsAlias          bool
+	HasExplicitValue bool
 }
 
 // parseBuildSettingOverrideFlag interprets command line options that
@@ -45,6 +47,23 @@ type Command interface {
 type commandAncestor struct {
 	name      string
 	mustApply bool
+}
+
+// formatRCAnnouncement avoids echoing environment values and encryption keys
+// into logs. Bare NAME overrides are still reported by name.
+func formatRCAnnouncement(directive, option string) string {
+	for _, flag := range []string{"--action_env=", "--repo_env="} {
+		if value, ok := strings.CutPrefix(option, flag); ok {
+			if name, _, explicit := strings.Cut(value, "="); explicit {
+				option = flag + name + "=<redacted>"
+			}
+			break
+		}
+	}
+	if strings.HasPrefix(option, "--remote_encryption_key=") {
+		option = "--remote_encryption_key=<redacted>"
+	}
+	return directive + ": " + option
 }
 
 // ParseCommandAndArguments parses the name of a command like "build" or

@@ -115,6 +115,8 @@ func main() {
 	}
 	fmt.Printf("  appendArgument(argument string) error\n")
 	fmt.Printf("  appendBuildSettingOverride(override BuildSettingOverride)\n")
+	fmt.Printf("  appendRCAnnouncement(directive string, option string)\n")
+	fmt.Printf("  getRCAnnouncements() []string\n")
 	fmt.Printf("}\n")
 
 	for _, commandName := range slices.Sorted(maps.Keys(commands)) {
@@ -137,13 +139,16 @@ func main() {
 			fmt.Printf("Arguments []string\n")
 		}
 		fmt.Printf("BuildSettingOverrides []BuildSettingOverride\n")
+		fmt.Printf("RCAnnouncements []string\n")
 		fmt.Printf("}\n")
 
 		fmt.Printf("func (c *%sCommand) Reset() {\n", commandSymbolName)
 		for _, ancestorName := range slices.Sorted(maps.Keys(allAncestors)) {
 			fmt.Printf("c.%sFlags.Reset()\n", toSymbolName(ancestorName, true))
 		}
+		fmt.Printf("c.RCAnnouncements = nil\n")
 		fmt.Printf("}\n")
+		fmt.Printf("func (c *%sCommand) getRCAnnouncements() []string { return c.RCAnnouncements }\n", commandSymbolName)
 
 		for _, flagsName := range slices.Sorted(maps.Keys(commandFlags)) {
 			flagsSymbolName := toSymbolName(flagsName, true)
@@ -167,6 +172,9 @@ func main() {
 
 		fmt.Printf("func (c *%sCommand) appendBuildSettingOverride(override BuildSettingOverride) {\n", commandSymbolName)
 		fmt.Printf("  c.BuildSettingOverrides = append(c.BuildSettingOverrides, override)\n")
+		fmt.Printf("}\n")
+		fmt.Printf("func (c *%sCommand) appendRCAnnouncement(directive string, option string) {\n", commandSymbolName)
+		fmt.Printf("  c.RCAnnouncements = append(c.RCAnnouncements, formatRCAnnouncement(directive, option))\n")
 		fmt.Printf("}\n")
 	}
 
@@ -192,6 +200,7 @@ func main() {
 	fmt.Printf("      stack = append(stack, stackEntry{\n")
 	fmt.Printf("        remainingArgs: directives[i],\n")
 	fmt.Printf("        mustApply: ancestor.mustApply,\n")
+	fmt.Printf("        directiveName: ancestor.name,\n")
 	fmt.Printf("      })\n")
 	fmt.Printf("    }\n")
 	fmt.Printf("  }\n")
@@ -206,6 +215,7 @@ func main() {
 	fmt.Printf("      mustApply := currentStackEntry.mustApply\n")
 	fmt.Printf("      firstArg := (*currentArgs)[0]\n")
 	fmt.Printf("      (*currentArgs) = (*currentArgs)[1:]\n")
+	fmt.Printf("      if currentStackEntry.directiveName != \"\" { cmd.appendRCAnnouncement(currentStackEntry.directiveName, firstArg) }\n")
 	fmt.Printf("      if allowFlags && len(firstArg) > 1 && firstArg[0] == '-' && firstArg[1] == '-' {\n")
 	fmt.Printf("        longOptionName := firstArg\n")
 	fmt.Printf("        var optionValue string\n")
@@ -215,10 +225,51 @@ func main() {
 	fmt.Printf("          longOptionName = longOptionName[:assignmentIndex]\n")
 	fmt.Printf("        }\n")
 	fmt.Printf("        switch longOptionName {\n")
+	type flagOwner struct {
+		name string
+		flag flag
+	}
+	ownersByLongName := map[string][]flagOwner{}
 	for _, flagsName := range slices.Sorted(maps.Keys(commandFlags)) {
-		for _, flag := range commandFlags[flagsName] {
-			flag.flagType.emitLongNameParser(flagsName, flag.longName)
+		for _, f := range commandFlags[flagsName] {
+			ownersByLongName[f.longName] = append(ownersByLongName[f.longName], flagOwner{name: flagsName, flag: f})
 		}
+	}
+	for _, longName := range slices.Sorted(maps.Keys(ownersByLongName)) {
+		owners := ownersByLongName[longName]
+		if len(owners) == 1 {
+			owners[0].flag.flagType.emitLongNameParser(owners[0].name, longName)
+			continue
+		}
+		shared, ok := owners[0].flag.flagType.(enumFlagType)
+		if !ok {
+			panic("shared flags must be enum flags")
+		}
+		for _, owner := range owners[1:] {
+			other, ok := owner.flag.flagType.(enumFlagType)
+			if !ok || other != shared {
+				panic("shared flags must have identical enum types and defaults")
+			}
+		}
+		fmt.Printf("case %#v:\n", "--"+longName)
+		fmt.Printf("  var out *%s\n", shared.enumType)
+		for i, owner := range owners {
+			if i == 0 {
+				fmt.Printf("  if flags := cmd.get%sFlags(); flags != nil {\n", toSymbolName(owner.name, true))
+			} else {
+				fmt.Printf("  } else if flags := cmd.get%sFlags(); flags != nil {\n", toSymbolName(owner.name, true))
+			}
+			fmt.Printf("    out = &flags.%s\n", toSymbolName(longName, true))
+		}
+		fmt.Printf("  } else if mustApply {\n")
+		fmt.Printf("    return FlagNotApplicableError{Flag: longOptionName}\n")
+		fmt.Printf("  }\n")
+		fmt.Printf("  if assignmentIndex < 0 {\n")
+		fmt.Printf("    if len(*currentArgs) == 0 { return FlagMissingValueError{Flag: longOptionName} }\n")
+		fmt.Printf("    optionValue = (*currentArgs)[0]\n")
+		fmt.Printf("    (*currentArgs) = (*currentArgs)[1:]\n")
+		fmt.Printf("  }\n")
+		fmt.Printf("  if err := out.set(longOptionName, optionValue); err != nil { return err }\n")
 	}
 	fmt.Printf("        case \"--config\":\n")
 	fmt.Printf("          if assignmentIndex < 0 {\n")
@@ -256,7 +307,18 @@ func main() {
 	fmt.Printf("        default:\n")
 	fmt.Printf("          label, value, ok := parseBuildSettingOverrideFlag(longOptionName, assignmentIndex >= 0, optionValue)\n")
 	fmt.Printf("          if !ok {\n")
-	fmt.Printf("            return FlagNotRecognizedError{Flag: longOptionName}\n")
+	fmt.Printf("            if strings.HasPrefix(longOptionName, \"--@\") || strings.HasPrefix(longOptionName, \"--//\") || strings.HasPrefix(longOptionName, \"--no@\") || strings.HasPrefix(longOptionName, \"--no//\") { return FlagNotRecognizedError{Flag: longOptionName} }\n")
+	fmt.Printf("            switch cmd.(type) {\n")
+	fmt.Printf("            case *BuildCommand, *CqueryCommand, *RunCommand, *TestCommand:\n")
+	fmt.Printf("              label = longOptionName[2:]\n")
+	fmt.Printf("              value = optionValue\n")
+	fmt.Printf("              if assignmentIndex < 0 { value = \"true\" }\n")
+	fmt.Printf("              cmd.appendBuildSettingOverride(BuildSettingOverride{Label: label, Value: value, IsAlias: true, HasExplicitValue: assignmentIndex >= 0})\n")
+	fmt.Printf("              continue\n")
+	fmt.Printf("            default:\n")
+	fmt.Printf("              if mustApply { return FlagNotRecognizedError{Flag: longOptionName} }\n")
+	fmt.Printf("              continue\n")
+	fmt.Printf("            }\n")
 	fmt.Printf("          }\n")
 	fmt.Printf("          if cmd.getBuildFlags() != nil {\n")
 	fmt.Printf("            cmd.appendBuildSettingOverride(BuildSettingOverride{\n")

@@ -40,6 +40,8 @@
             "CompiledBzlFileDecodedGlobals",
             "CompiledBzlFileFunctionFactory",
             "CompiledBzlFileGlobal",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
             "RootModule",
             "Target",
             "TargetCompletion",
@@ -56,6 +58,7 @@
       },
       "CanonicalRepoName": {
          "dependsOn": [
+            "BuildSpecification",
             "ModuleExtensionRepoNames",
             "ModuleRepoMapping"
          ]
@@ -119,6 +122,12 @@
             "CompiledBzlFile"
          ]
       },
+      "CompletedActionResult": {
+         "dependsOn": [
+            "ActionResult"
+         ],
+         "keyContainsReferences": true
+      },
       "ConfiguredAspect": {
          "dependsOn": [
             "ActionEncoderObject",
@@ -148,6 +157,21 @@
             "VisibleTarget"
          ],
          "keyContainsReferences": true
+      },
+      "ConfiguredQueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "QueryResult",
+            "RootModule",
+            "Target",
+            "TargetProvider",
+            "VisibleTarget"
+         ]
       },
       "ConfiguredTarget": {
          "dependsOn": [
@@ -276,6 +300,7 @@
       },
       "FileRoot": {
          "dependsOn": [
+            "BuildSpecification",
             "DirectoryCreationParametersObject",
             "DirectoryReaders",
             "FileCreationParametersObject",
@@ -283,6 +308,7 @@
             "FileReader",
             "FileRoot",
             "Repo",
+            "RootModule",
             "TargetActionInputRoot",
             "TargetActionResult",
             "TargetOutput"
@@ -301,14 +327,16 @@
             "DirectoryCreationParametersObject",
             "DirectoryReaders",
             "FilesRoot",
-            "FileRoot"
+            "FileRoot",
+            "RootModule"
          ],
          "keyContainsReferences": true
       },
       "Glob": {
          "dependsOn": [
             "DirectoryReaders",
-            "FilesInPackage"
+            "FilesInPackage",
+            "RepoDefaultAttrs"
          ]
       },
       "HTTPArchiveContents": {
@@ -331,6 +359,8 @@
       },
       "ModuleDotBazelContents": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileProperties",
             "HTTPFileContents",
             "ModuleFinalBuildList",
@@ -395,6 +425,8 @@
       },
       "ModuleRoughBuildList": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileReader",
             "HTTPFileContents",
             "ModuleDotBazelContents",
@@ -457,7 +489,19 @@
       "PackagesAtAndBelow": {
          "dependsOn": [
             "DirectoryReaders",
-            "Repo"
+            "Repo",
+            "RepoDefaultAttrs"
+         ]
+      },
+      "QueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "CanonicalRepoName",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetDependencies",
+            "TargetPatternExpansion"
          ]
       },
       "RawActionResult": {
@@ -594,6 +638,21 @@
             "type": "*RuleImplementationWrappers"
          }
       },
+      "RunTarget": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetCompletion",
+            "TargetPatternExpansion",
+            "VisibleTarget"
+         ]
+      },
       "Select": {
          "dependsOn": [
             "CanonicalRepoName",
@@ -648,6 +707,7 @@
          "dependsOn": [
             "ActionEncoderObject",
             "ActionReaders",
+            "BuildSpecification",
             "BuiltinsModuleNames",
             "CanonicalRepoName",
             "CompiledBzlFileDecodedGlobals",
@@ -670,6 +730,7 @@
             "FileCreationParameters",
             "FileRoot",
             "FilesRoot",
+            "RootModule",
             "TargetAction"
          ],
          "keyContainsReferences": true
@@ -687,10 +748,19 @@
       },
       "TargetCompletion": {
          "dependsOn": [
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
             "FileRoot",
+            "FilesRoot",
+            "RootModule",
             "TargetProvider"
          ],
          "keyContainsReferences": true
+      },
+      "TargetDependencies": {
+         "dependsOn": [
+            "Target"
+         ]
       },
       "TargetOutput": {
          "dependsOn": [
@@ -716,6 +786,40 @@
             "ConfiguredTarget"
          ],
          "keyContainsReferences": true
+      },
+      "TargetTestResult": {
+         "dependsOn": [
+            "ActionEncoderObject",
+            "CompiledBzlFileGlobal",
+            "CompletedActionResult",
+            "DirectoryCreationParameters",
+            "DirectoryCreationParametersObject",
+            "DirectoryReaders",
+            "FileCreationParameters",
+            "FileRoot",
+            "FilesRoot",
+            "RootModule",
+            "ResolvedToolchains",
+            "Target",
+            "TargetProvider",
+            "VisibleTarget"
+         ],
+         "keyContainsReferences": true
+      },
+      "TestResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "RootModule",
+            "Target",
+            "TargetPatternExpansion",
+            "TargetTestResult",
+            "VisibleTarget"
+         ]
       },
       "UsedModuleExtension": {
          "dependsOn": [

@@ -60,44 +60,34 @@ runfiles, _runfiles_raw = provider(
 _runfiles = runfiles
 
 def _default_info_init(*, data_runfiles = None, default_runfiles = None, executable = None, files = None, runfiles = None):
-    # According to the Bazel documentation, only the runfiles parameter
-    # should be used. Calling DefaultInfo() with data_runfiles or
-    # default_runfiles is deprecated. In this implementation we simply
-    # merge all of the runfiles together.
-    merged_runfiles = (runfiles or _runfiles()).merge_all(
-        ([data_runfiles] if data_runfiles else []) +
-        ([default_runfiles] if default_runfiles else []),
-    )
+    # The legacy fields are distinct: rules_python collects data runfiles
+    # from data dependencies but default runfiles from srcs and deps.
+    data = data_runfiles or runfiles or _runfiles()
+    default = default_runfiles or runfiles or _runfiles()
     return {
+        "_data_runfiles": data,
+        "_default_runfiles": default,
         "files": files or depset(),
         "files_to_run": FilesToRunProvider(
-            # Copy fields instead of embedding the runfiles object into
-            # FilesToRunProvider. This reduces the size of DefaultInfo
-            # significantly.
-            _runfiles_files = merged_runfiles.files,
-            _runfiles_symlinks = merged_runfiles.symlinks,
-            _runfiles_root_symlinks = merged_runfiles.root_symlinks,
+            _runfiles_files = default.files,
+            _runfiles_symlinks = default.symlinks,
+            _runfiles_root_symlinks = default.root_symlinks,
             executable = executable,
             repo_mapping_manifest = None,
             runfiles_manifest = None,
         ),
     }
 
-def _default_info_runfiles(r):
-    # There is no point in storing the runfiles both in DefaultInfo and
-    # the FilesToRunProvider contained within. Simply let
-    # DefaultInfo.{data,default}_runfiles return the runfiles contained
-    # in the FilesToRunProvider.
-    return runfiles(
-        files = r.files_to_run._runfiles_files,
-        symlinks = r.files_to_run._runfiles_symlinks,
-        root_symlinks = r.files_to_run._runfiles_root_symlinks,
-    )
+def _default_info_data_runfiles(r):
+    return r._data_runfiles
+
+def _default_info_default_runfiles(r):
+    return r._default_runfiles
 
 DefaultInfo, _DefaultInfoRaw = provider(
     computed_fields = {
-        "data_runfiles": _default_info_runfiles,
-        "default_runfiles": _default_info_runfiles,
+        "data_runfiles": _default_info_data_runfiles,
+        "default_runfiles": _default_info_default_runfiles,
     },
     init = _default_info_init,
 )
@@ -614,9 +604,9 @@ starlark_doc_extract = rule(
 )
 
 def _test_suite_impl(ctx):
-    # Building a test_suite builds the tests it references. Running
-    # them and expanding an empty "tests" attribute to all tests in the
-    # package are left unimplemented.
+    # Building a suite collects explicitly declared tests' outputs. The
+    # test command expands suite members (and empty suites' package tests)
+    # in TestResult, without executing anything during a plain build.
     return [DefaultInfo(files = depset(transitive = [
         t[DefaultInfo].files
         for t in ctx.attr.tests

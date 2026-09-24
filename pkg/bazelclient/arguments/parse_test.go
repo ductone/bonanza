@@ -2,11 +2,14 @@ package arguments_test
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
 	"bonanza.build/pkg/bazelclient/arguments"
 
+	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/stretchr/testify/require"
 
@@ -38,9 +41,11 @@ func TestParse(t *testing.T) {
 				Color:                  arguments.Color_Auto,
 				LockfileMode:           arguments.LockfileMode_Update,
 				RemoteCacheCompression: true,
+				RespectGitignore:       true,
 			},
 			BuildFlags: arguments.BuildFlags{
-				KeepGoing: true,
+				KeepGoing:     true,
+				SymlinkPrefix: "bonanza-",
 			},
 			Arguments: []string{"//..."},
 		}, command)
@@ -117,4 +122,18 @@ func TestParse(t *testing.T) {
 			GnuFormat: true,
 		}, command.(*arguments.VersionCommand).VersionFlags)
 	})
+}
+
+func TestParseRejectsUnsupportedStartupRCOption(t *testing.T) {
+	workspace := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".bazelrc"), []byte("startup --max_idle_secs=600\n"), 0o600))
+	root, err := filesystem.NewLocalDirectory(&path.RootBuilder)
+	require.NoError(t, err)
+	defer root.Close()
+	_, err = arguments.Parse(
+		[]string{"--nosystem_rc", "--nohome_rc", "cquery", "--output=files", "//bazel/python:check.py"},
+		root, path.LocalFormat, path.LocalFormat.NewParser(workspace),
+		path.LocalFormat.NewParser(workspace), path.LocalFormat.NewParser(workspace),
+	)
+	require.ErrorContains(t, err, "startup option \"--max_idle_secs=600\" is not supported")
 }

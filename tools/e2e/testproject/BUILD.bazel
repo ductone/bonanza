@@ -17,12 +17,14 @@ load(
     ":defs.bzl",
     "attr_transitioned_reader",
     "repo_info",
+    "runnable_script",
     "self_transitioned_reader",
     "setting_reader",
     "transitioned_mode_aspect_reader",
     "verify_native_apis",
 )
 load(":flag_enum.bzl", "flag_enum_probe")
+load(":tests.bzl", "shell_test")
 
 string_flag(
     name = "mode",
@@ -288,6 +290,82 @@ genrule(
           "cat $(location :hello) $(location :repo_info) $(location :transitioned_mode) > $@",
 )
 
+# Tests for "bonanza_bazel test". The test binaries report the
+# environment they were given, so that the log the client prints shows
+# whether TEST_TARGET, TESTBRIDGE_TEST_ONLY and the runfiles directory
+# reached them.
+shell_test(
+    name = "passing_test",
+    data = ["action_edges_template.txt"],
+)
+
+shell_test(
+    name = "failing_test",
+    exit_code = 1,
+)
+
+shell_test(
+    name = "filtered_test",
+    expected_filter = "OnlyThis",
+)
+
+shell_test(
+    name = "sharded_test",
+    check_runfile = True,
+    data = ["action_edges_template.txt"],
+    failure_shard = 1,
+    shard_count = 2,
+)
+
+shell_test(
+    name = "missing_shard_status_test",
+    shard_count = 2,
+    write_shard_status = False,
+)
+
+shell_test(
+    name = "excluded_test",
+    exit_code = 1,
+    tags = ["integration"],
+)
+
+shell_test(
+    name = "unsupported_local_test",
+    tags = ["local"],
+)
+
+constraint_setting(name = "test_execution_requirement")
+constraint_value(
+    name = "unregistered_test_execution_platform",
+    constraint_setting = ":test_execution_requirement",
+)
+
+shell_test(
+    name = "unschedulable_test",
+    exec_compatible_with = [":unregistered_test_execution_platform"],
+)
+
+test_suite(
+    name = "sharded_suite",
+    tests = [":passing_test", ":sharded_test"],
+)
+
+# Exercises "bonanza_bazel run": the executable is a symlink that the
+# builder materializes on its own, and the runfiles consist of a source
+# file, so launching this target needs no worker.
+runnable_script(
+    name = "runnable",
+    src = "runnable.sh",
+    data = ["runnable_data.txt"],
+)
+
+# Source files reach the client's output tree too, which lets the
+# materialization of source files be exercised alongside output files.
+filegroup(
+    name = "sources",
+    srcs = ["action_edges_template.txt"],
+)
+
 filegroup(
     name = "all",
     srcs = [
@@ -302,7 +380,9 @@ filegroup(
         ":hello",
         ":marked_labels",
         ":repo_info",
+        ":runnable",
         ":self_transitioned",
+        ":sources",
         ":toolchain_probe",
         ":transitioned_mode",
         ":verify",

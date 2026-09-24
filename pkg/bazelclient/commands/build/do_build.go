@@ -1,6 +1,7 @@
 package build
 
 import (
+	"bytes"
 	"context"
 	"encoding"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"bonanza.build/pkg/label"
 	"bonanza.build/pkg/model/core"
 	model_core "bonanza.build/pkg/model/core"
+	"bonanza.build/pkg/model/core/btree"
 	model_encoding "bonanza.build/pkg/model/encoding"
 	model_executewithstorage "bonanza.build/pkg/model/executewithstorage"
 	model_filesystem "bonanza.build/pkg/model/filesystem"
@@ -63,6 +66,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -98,11 +102,36 @@ func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.C
 type localCapturableDirectoryOptions[TFile model_core.ReferenceMetadata] struct {
 	fileParameters *model_filesystem.FileCreationParameters
 	capturer       model_filesystem.FileMerkleTreeCapturer[TFile]
+	exclusions     *SourceExclusions
 }
 
 type localCapturableDirectory[TDirectory, TFile model_core.ReferenceMetadata] struct {
 	filesystem.DirectoryCloser
 	options *localCapturableDirectoryOptions[TFile]
+	// relativePath is the path of this directory relative to the
+	// root of the module being scanned, used to evaluate
+	// exclusions that only apply at a specific location (e.g. a
+	// .bazelignore entry of "frontend/node_modules", or Bazel's
+	// convenience symlinks, which only ever appear at the
+	// workspace root).
+	relativePath []string
+}
+
+func (d *localCapturableDirectory[TDirectory, TFile]) ReadDir() ([]filesystem.FileInfo, error) {
+	entries, err := d.DirectoryCloser.ReadDir()
+	if err != nil {
+		return nil, err
+	}
+	if d.options.exclusions == nil {
+		return entries, nil
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if !d.options.exclusions.ShouldExclude(d.relativePath, entry) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }
 
 func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(name path.Component) (*model_filesystem.CreatedDirectory[TDirectory], model_filesystem.CapturableDirectory[TDirectory, TFile], error) {
@@ -110,9 +139,13 @@ func (d *localCapturableDirectory[TDirectory, TFile]) EnterCapturableDirectory(n
 	if err != nil {
 		return nil, nil, err
 	}
+	childRelativePath := make([]string, len(d.relativePath)+1)
+	copy(childRelativePath, d.relativePath)
+	childRelativePath[len(d.relativePath)] = name.String()
 	return nil, &localCapturableDirectory[TDirectory, TFile]{
 		DirectoryCloser: child,
 		options:         d.options,
+		relativePath:    childRelativePath,
 	}, nil
 }
 
@@ -161,15 +194,114 @@ func (f *localCapturableFile[TFile]) Discard() {
 	f.file = nil
 }
 
-// DoBuild implements the "bazel build" command, which builds a
-// specified set of targets in the current workspace.
-func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
-	logger := logging.NewLoggerFromFlags(&args.CommonFlags)
-	commands.ValidateInsideWorkspace(logger, "build", workspacePath)
+// Outcome contains the state that a completed build leaves behind, so
+// that commands can extract the values of the keys they requested and
+// materialize output files.
+type Outcome struct {
+	Context                   context.Context
+	Logger                    logging.Logger
+	ParsedObjectPoolIngester  *model_parser.ParsedObjectPoolIngester[object.LocalReference]
+	ActionEncoder             model_encoding.DeterministicBinaryEncoder
+	ReferenceFormat           object.ReferenceFormat
+	DirectoryAccessParameters *model_filesystem.DirectoryAccessParameters
+	FileAccessParameters      *model_filesystem.FileAccessParameters
+	OutcomesReference         model_core.Decodable[object.LocalReference]
 
-	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache, &args.CommonFlags)
+	// The canonicalized target patterns, configurations and output groups
+	// used in the BuildResult key of this build.
+	TargetPatterns []string
+	Configurations []*model_analysis_pb.BuildResult_Key_Configuration
+	OutputGroups   []string
+
+	buildFlags    *arguments.BuildFlags
+	workspacePath path.Parser
+}
+
+// ResolveTargetPatterns reads the optional target file before starting a build.
+func ResolveTargetPatterns(patterns []string, filename string) ([]string, error) {
+	if filename == "" {
+		return patterns, nil
+	}
+	if len(patterns) != 0 {
+		return nil, fmt.Errorf("--target_pattern_file cannot be combined with command-line target patterns")
+	}
+	contents, err := os.ReadFile(filename)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", args.CommonFlags.RemoteCache, err))
+		return nil, fmt.Errorf("read --target_pattern_file=%q: %w", filename, err)
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		if pattern := strings.TrimSpace(line); pattern != "" {
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns, nil
+}
+
+// resolveEnvironmentOverrides preserves the distinction between NAME (inherit
+// if present, otherwise unset) and NAME= (set to the empty string). The
+// effective values, not the names of inherited client variables, are sent to
+// analysis so changes invalidate the appropriate action/repository keys.
+func resolveEnvironmentOverrides(options []string, lookup func(string) (string, bool)) ([]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, error) {
+	byName := make(map[string]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, len(options))
+	for _, option := range options {
+		name, value, explicit := strings.Cut(option, "=")
+		if name == "" || strings.IndexFunc(name, func(r rune) bool {
+			return r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		}) >= 0 || (name[0] >= '0' && name[0] <= '9') || strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("invalid environment override %q", option)
+		}
+		override := &model_analysis_pb.BuildSpecification_Value_EnvironmentOverride{Name: name, Value: value}
+		if !explicit {
+			override.Value, explicit = lookup(name)
+			override.Unset = !explicit
+		}
+		byName[name] = override
+	}
+	result := make([]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, 0, len(byName))
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		result = append(result, byName[name])
+	}
+	return result, nil
+}
+
+// PerformBuild builds a set of target patterns in the current
+// workspace. In addition to the BuildResult key that describes the
+// build as a whole, callers may request the values of additional keys,
+// which they can subsequently read using LookUpValue(). As those keys
+// tend to be derived from the canonicalized target patterns and
+// configurations, they are provided through a callback.
+//
+// A nil Outcome is returned if the build did not emit any outcomes.
+// Failures cause the process to terminate.
+func PerformBuild(
+	commandName string,
+	commonFlags *arguments.CommonFlags,
+	buildFlags *arguments.BuildFlags,
+	buildSettingOverrides []arguments.BuildSettingOverride,
+	targetPatternArguments []string,
+	additionalRequestedKeys func(targetPatterns []string, configurations []*model_analysis_pb.BuildResult_Key_Configuration) []proto.Message,
+	workspacePath path.Parser,
+) *Outcome {
+	logger := logging.NewLoggerFromFlags(commonFlags)
+	commands.ValidateInsideWorkspace(logger, commandName, workspacePath)
+	targetPatternArguments, err := ResolveTargetPatterns(targetPatternArguments, buildFlags.TargetPatternFile)
+	if err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
+
+	stableStatus, volatileStatus, err := currentWorkspaceStatus(buildSettingOverrides, buildFlags.EmbedLabel)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create workspace status: %s", err))
+	}
+
+	outputGroups, err := parseOutputGroups(buildFlags.OutputGroups)
+	if err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
+
+	remoteCacheClient, err := newGRPCClient(commonFlags.RemoteCache, commonFlags)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", commonFlags.RemoteCache, err))
 	}
 
 	// Determine the names and paths of all modules that are present
@@ -205,8 +337,59 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
+	workspacePathStr, err := ResolveToAbsoluteString(workspacePath)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve workspace path: %s", err))
+	}
+	workspaceBaseName := BaseName(workspacePathStr)
+
+	// Vendored repos take precedence; unvendored repos follow normal
+	// resolution unless strict mode requires a complete snapshot.
+	if commonFlags.StrictVendor && commonFlags.VendorDir == "" {
+		logger.Fatal(formatted.Text("--strict_vendor requires --vendor_dir"))
+	}
+	strictVendorMode := commonFlags.StrictVendor ||
+		(commonFlags.VendorDir != "" && commonFlags.StrictModuleResolution && len(commonFlags.Registry) == 0)
+	registryURLs := append([]string(nil), commonFlags.Registry...)
+	if len(registryURLs) == 0 && (commonFlags.VendorDir != "" || !commonFlags.StrictModuleResolution) {
+		registryURLs = []string{"https://bcr.bazel.build/"}
+	}
+	var vendorDirectory *VendorDirectory
+	if commonFlags.VendorDir != "" {
+		if commonFlags.LockfileMode != arguments.LockfileMode_Error {
+			logger.Fatal(formatted.Text("--vendor_dir requires --lockfile_mode=error, because update and refresh semantics would require remote registry access"))
+		}
+		for index, registryURL := range registryURLs {
+			normalizedRegistryURL, err := NormalizeVendorRegistryURL(registryURL)
+			if err != nil {
+				logger.Fatal(formatted.Textf("Invalid registry for --vendor_dir: %s", err))
+			}
+			registryURLs[index] = normalizedRegistryURL
+		}
+		vendorDirectory, err = ScanVendorDirectory(
+			workspacePath,
+			commonFlags.VendorDir,
+			registryURLs,
+			/* requireLockfile = */ true,
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Invalid --vendor_dir=%q: %s", commonFlags.VendorDir, err))
+		}
+	}
+	flagAliases := map[string]string{}
+	if vendorDirectory != nil {
+		maps.Copy(flagAliases, vendorDirectory.FlagAliases)
+	}
+	if err := scanModuleFlagAliases(flagAliases, workspacePathStr, rootModuleName.ToModuleInstance(nil).GetBareCanonicalRepo()); err != nil {
+		logger.Fatal(formatted.Textf("Failed to load root module flag aliases: %s", err))
+	}
+	resolvedBuildSettingOverrides, err := ResolveFlagAliases(buildSettingOverrides, flagAliases)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve build flags: %s", err))
+	}
+
 	// Augment results with modules provided to --override_module.
-	for _, overrideModule := range args.CommonFlags.OverrideModule {
+	for _, overrideModule := range commonFlags.OverrideModule {
 		fields := strings.SplitN(overrideModule, "=", 2)
 		if len(fields) != 2 {
 			logger.Fatal(formatted.Text("Module overrides must use the format ${module_name}=${path}"))
@@ -223,12 +406,19 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		return strings.Compare(a.String(), b.String())
 	})
 
+	var vendoredRepos []VendoredRepo
+	var vendoredRegistries []VendoredRegistry
+	if vendorDirectory != nil {
+		vendoredRepos = vendorDirectory.Repos
+		vendoredRegistries = vendorDirectory.Registries
+	}
+
 	// Determine parameters for creating file and directory Merkle
 	// trees. Parameters include minimum/maximum sizes of the
 	// resulting objects, and whether they are compressed and
 	// encrypted.
 	referenceFormat := util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1))
-	encryptionKeyBytes, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteEncryptionKey)
+	encryptionKeyBytes, err := base64.StdEncoding.DecodeString(commonFlags.RemoteEncryptionKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode value of --remote_encryption_key: %s", err))
 	}
@@ -240,7 +430,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		},
 	}}
 	var chunkEncoders []*model_encoding_pb.BinaryEncoder
-	if args.CommonFlags.RemoteCacheCompression {
+	if commonFlags.RemoteCacheCompression {
 		chunkEncoders = append(chunkEncoders, &model_encoding_pb.BinaryEncoder{
 			Encoder: &model_encoding_pb.BinaryEncoder_LzwCompressing{
 				LzwCompressing: &emptypb.Empty{},
@@ -275,40 +465,173 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Invalid file creation parameters: %s", err))
 	}
 
+	// Determine, for each module, how many path components separate
+	// it from the workspace root. This is used below to decide
+	// whether a symbolic link that escapes a module's own root
+	// directory (e.g. the ".bazelversion -> ../.bazelversion" links
+	// that Bazel's vendor mode places inside vendored modules) still
+	// remains within the workspace as a whole, as opposed to
+	// escaping it entirely.
+	moduleDepths := make(map[label.Module]int, len(moduleNames))
+	for _, moduleName := range moduleNames {
+		modulePathStr, err := ResolveToAbsoluteString(modulePaths[moduleName])
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to resolve path of module %#v: %s", moduleName.String(), err))
+		}
+		depth, withinWorkspace := relativeDepth(workspacePathStr, modulePathStr)
+		if !withinWorkspace {
+			// The module lives entirely outside of the
+			// workspace (e.g. an --override_module pointing
+			// at an unrelated directory). Don't grant it any
+			// escapement allowance.
+			depth = 0
+		}
+		moduleDepths[moduleName] = depth
+	}
+
+	vendoredRepoDepths := make([]int, len(vendoredRepos))
+	for i, vendoredRepo := range vendoredRepos {
+		depth, withinWorkspace := relativeDepth(workspacePathStr, vendoredRepo.RootPath)
+		if !withinWorkspace {
+			depth = 0
+		}
+		vendoredRepoDepths[i] = depth
+	}
+	vendoredRegistryDepths := make([]int, len(vendoredRegistries))
+	for i, vendoredRegistry := range vendoredRegistries {
+		depth, withinWorkspace := relativeDepth(workspacePathStr, vendoredRegistry.RootPath)
+		if !withinWorkspace {
+			depth = 0
+		}
+		vendoredRegistryDepths[i] = depth
+	}
+
 	// Construct Merkle trees for all modules that need to be
 	// uploaded to storage.
 	logger.Info(formatted.Text("Scanning module sources"))
 	ctx := context.Background()
 	group, groupCtx := errgroup.WithContext(ctx)
-	moduleRootDirectories := make([]model_filesystem.CapturedDirectory, 0, len(moduleNames))
+	moduleRootDirectories := make([]model_filesystem.CapturedDirectory, len(moduleNames))
 	createdModuleRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(moduleNames))
+	vendoredRepoRootDirectories := make([]model_filesystem.CapturedDirectory, len(vendoredRepos))
+	createdVendoredRepoRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(vendoredRepos))
+	vendoredRegistryRootDirectories := make([]model_filesystem.CapturedDirectory, len(vendoredRegistries))
+	createdVendoredRegistryRootDirectories := make([]model_filesystem.CreatedDirectory[model_core.CreatedObjectTree], len(vendoredRegistries))
 	createMerkleTreesConcurrency := semaphore.NewWeighted(int64(runtime.NumCPU()))
+	captureLocalSource := func(
+		sourceName string,
+		sourcePath path.Parser,
+		isRootModule bool,
+		excludedRootPath string,
+		respectGitignore bool,
+		requireGitignore bool,
+		capturedDirectory *model_filesystem.CapturedDirectory,
+		createdDirectory *model_filesystem.CreatedDirectory[model_core.CreatedObjectTree],
+	) error {
+		sourceDirectory, err := filesystem.NewLocalDirectory(sourcePath)
+		if err != nil {
+			return util.StatusWrapf(err, "Failed to open root directory of %s", sourceName)
+		}
+		sourcePathStr, err := ResolveToAbsoluteString(sourcePath)
+		if err != nil {
+			sourceDirectory.Close()
+			return util.StatusWrapf(err, "Failed to resolve path of %s", sourceName)
+		}
+		exclusions, err := NewSourceExclusions(
+			logger,
+			sourceDirectory,
+			sourceName,
+			sourcePathStr,
+			isRootModule,
+			workspaceBaseName,
+			respectGitignore,
+			requireGitignore,
+		)
+		if err != nil {
+			sourceDirectory.Close()
+			return err
+		}
+		if excludedRootPath != "" {
+			if err := exclusions.AddIgnoredRelativePath(excludedRootPath); err != nil {
+				sourceDirectory.Close()
+				return fmt.Errorf("exclude %q from %s source upload: %w", excludedRootPath, sourceName, err)
+			}
+		}
+
+		*capturedDirectory = localCapturedDirectory{
+			DirectoryCloser: sourceDirectory,
+		}
+		if err := model_filesystem.CreateDirectoryMerkleTree(
+			groupCtx,
+			createMerkleTreesConcurrency,
+			group,
+			directoryParameters,
+			&localCapturableDirectory[model_core.CreatedObjectTree, model_core.NoopReferenceMetadata]{
+				DirectoryCloser: sourceDirectory,
+				options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
+					fileParameters: fileParameters,
+					capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
+					exclusions:     exclusions,
+				},
+			},
+			model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
+			createdDirectory,
+		); err != nil {
+			return util.StatusWrapf(err, "Failed to create directory Merkle tree for %s", sourceName)
+		}
+		return nil
+	}
 	group.Go(func() error {
 		for i, moduleName := range moduleNames {
-			modulePath := modulePaths[moduleName]
-			moduleRootDirectory, err := filesystem.NewLocalDirectory(modulePath)
-			if err != nil {
-				return util.StatusWrapf(err, "Failed to open root directory of module %#v", moduleName.String())
+			excludedRootPath := ""
+			if moduleName == rootModuleName && vendorDirectory != nil {
+				modulePathStr, err := ResolveToAbsoluteString(modulePaths[moduleName])
+				if err != nil {
+					return util.StatusWrapf(err, "Failed to resolve root module path")
+				}
+				if modulePathStr == workspacePathStr {
+					excludedRootPath = vendorDirectory.RootRelativePath
+				}
 			}
-			moduleRootDirectories = append(moduleRootDirectories, localCapturedDirectory{
-				DirectoryCloser: moduleRootDirectory,
-			})
-			if err := model_filesystem.CreateDirectoryMerkleTree(
-				groupCtx,
-				createMerkleTreesConcurrency,
-				group,
-				directoryParameters,
-				&localCapturableDirectory[model_core.CreatedObjectTree, model_core.NoopReferenceMetadata]{
-					DirectoryCloser: moduleRootDirectory,
-					options: &localCapturableDirectoryOptions[model_core.NoopReferenceMetadata]{
-						fileParameters: fileParameters,
-						capturer:       model_filesystem.NewSimpleFileMerkleTreeCapturer(model_core.DiscardingCreatedObjectCapturer),
-					},
-				},
-				model_filesystem.FileDiscardingDirectoryMerkleTreeCapturer,
+			if err := captureLocalSource(
+				fmt.Sprintf("module %#v", moduleName.String()),
+				modulePaths[moduleName],
+				moduleName == rootModuleName,
+				excludedRootPath,
+				commonFlags.RespectGitignore,
+				moduleName == rootModuleName && commonFlags.RequireGitignore,
+				&moduleRootDirectories[i],
 				&createdModuleRootDirectories[i],
 			); err != nil {
-				return util.StatusWrapf(err, "Failed to create directory Merkle tree for module %#v", moduleName.String())
+				return err
+			}
+		}
+		for i, vendoredRepo := range vendoredRepos {
+			if err := captureLocalSource(
+				fmt.Sprintf("vendored repository %q", "@@"+vendoredRepo.CanonicalRepo.String()),
+				path.LocalFormat.NewParser(vendoredRepo.RootPath),
+				/* isRootModule = */ false,
+				/* excludedRootPath = */ "",
+				/* respectGitignore = */ false,
+				/* requireGitignore = */ false,
+				&vendoredRepoRootDirectories[i],
+				&createdVendoredRepoRootDirectories[i],
+			); err != nil {
+				return err
+			}
+		}
+		for i, vendoredRegistry := range vendoredRegistries {
+			if err := captureLocalSource(
+				fmt.Sprintf("vendored registry %q", vendoredRegistry.URL),
+				path.LocalFormat.NewParser(vendoredRegistry.RootPath),
+				/* isRootModule = */ false,
+				/* excludedRootPath = */ "",
+				/* respectGitignore = */ false,
+				/* requireGitignore = */ false,
+				&vendoredRegistryRootDirectories[i],
+				&createdVendoredRegistryRootDirectories[i],
+			); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -317,7 +640,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
-	fetcherPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorFetcherPkixPublicKey)
+	fetcherPKIXPublicKey, err := base64.StdEncoding.DecodeString(commonFlags.RemoteExecutorFetcherPkixPublicKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_fetcher_pkix_public_key: %s", err))
 	}
@@ -333,73 +656,148 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		RootModuleName:                         rootModuleName.String(),
 		DirectoryCreationParameters:            directoryParametersMessage,
 		FileCreationParameters:                 fileParametersMessage,
-		IgnoreRootModuleDevDependencies:        args.CommonFlags.IgnoreDevDependency,
-		BuiltinsModuleNames:                    args.CommonFlags.BuiltinsModule,
-		RepoPlatform:                           args.CommonFlags.RepoPlatform,
+		IgnoreRootModuleDevDependencies:        commonFlags.IgnoreDevDependency,
+		BuiltinsModuleNames:                    commonFlags.BuiltinsModule,
+		RepoPlatform:                           commonFlags.RepoPlatform,
 		FetchPlatformPkixPublicKey:             fetcherPKIXPublicKey,
 		ActionEncoders:                         defaultEncoders,
-		RuleImplementationWrapperIdentifier:    args.CommonFlags.RuleImplementationWrapperIdentifier,
-		SubruleImplementationWrapperIdentifier: args.CommonFlags.SubruleImplementationWrapperIdentifier,
+		RuleImplementationWrapperIdentifier:    commonFlags.RuleImplementationWrapperIdentifier,
+		SubruleImplementationWrapperIdentifier: commonFlags.SubruleImplementationWrapperIdentifier,
+		ModuleRegistryUrls:                     registryURLs,
+		StrictVendorMode:                       strictVendorMode,
+		StableWorkspaceStatus:                  stableStatus,
+		VolatileWorkspaceStatus:                volatileStatus,
 	}
-	switch args.CommonFlags.LockfileMode {
+	buildSpecification.ActionEnv, err = resolveEnvironmentOverrides(buildFlags.ActionEnv, os.LookupEnv)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid --action_env: %s", err))
+	}
+	buildSpecification.RepoEnv, err = resolveEnvironmentOverrides(buildFlags.RepoEnv, os.LookupEnv)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid --repo_env: %s", err))
+	}
+	switch commonFlags.LockfileMode {
 	case arguments.LockfileMode_Off:
 	case arguments.LockfileMode_Update:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{}
 	case arguments.LockfileMode_Refresh:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
-			Error: true,
+			MaximumCacheDuration: &durationpb.Duration{Seconds: 3600},
 		}
 	case arguments.LockfileMode_Error:
 		buildSpecification.UseLockfile = &model_analysis_pb.BuildSpecification_Value_UseLockfile{
-			MaximumCacheDuration: &durationpb.Duration{Seconds: 3600},
+			Error: true,
 		}
 	default:
 		panic("unknown lockfile mode")
 	}
-	if len(args.CommonFlags.Registry) > 0 {
-		buildSpecification.ModuleRegistryUrls = args.CommonFlags.Registry
-	} else {
-		buildSpecification.ModuleRegistryUrls = []string{"https://bcr.bazel.build/"}
+	if vendorDirectory == nil && len(commonFlags.Registry) == 0 && !commonFlags.StrictModuleResolution {
+		logger.Info(formatted.Text("No --registry specified; falling back to https://bcr.bazel.build/ for any module not supplied locally. Pass --strict_module_resolution to fail instead of fetching from a registry."))
 	}
 	buildSpecificationPatcher := model_core.NewReferenceMessagePatcher[dag.ObjectContentsWalker]()
 
-	for i, moduleName := range moduleNames {
-		createdRootDirectory := createdModuleRootDirectories[i]
-		if l := createdRootDirectory.MaximumSymlinkEscapementLevels; l == nil || l.Value != 0 {
-			logger.Fatal(formatted.Textf("Module %#v contains one or more symbolic links that potentially escape the module's root directory", moduleName.String()))
+	captureRootDirectory := func(
+		sourceName string,
+		createdRootDirectory model_filesystem.CreatedDirectory[model_core.CreatedObjectTree],
+		capturedRootDirectory model_filesystem.CapturedDirectory,
+		sourceDepth int,
+	) (*model_filesystem_pb.DirectoryReference, error) {
+		switch maximumEscapement := createdRootDirectory.MaximumSymlinkEscapementLevels; {
+		case maximumEscapement == nil:
+			return nil, fmt.Errorf("%s contains one or more symbolic links whose target cannot be bounded (e.g. an absolute path, or \"..\" following a named path component)", sourceName)
+		case maximumEscapement.Value > uint32(sourceDepth):
+			return nil, fmt.Errorf("%s contains one or more symbolic links that escape the workspace directory", sourceName)
+		case maximumEscapement.Value != 0:
+			logger.Warning(formatted.Textf("%s contains one or more symbolic links that escape its own root directory, but remain within the workspace", sourceName))
 		}
 		createdObject, err := model_core.MarshalAndEncodeDeterministic(
-			model_core.ProtoToBinaryMarshaler(createdModuleRootDirectories[i].Message),
+			model_core.ProtoToBinaryMarshaler(createdRootDirectory.Message),
 			referenceFormat,
 			directoryParameters.GetEncoder(),
 		)
 		if err != nil {
-			logger.Fatal(formatted.Textf("Failed to create root directory object for module %#v: %s", moduleName.String(), err))
+			return nil, err
 		}
-
 		createdObjectTree := model_core.CreatedObjectTree(createdObject.Value)
 		decodingParameters := createdObject.GetDecodingParameters()
+		return createdRootDirectory.ToDirectoryReference(
+			&model_core_pb.DecodableReference{
+				Reference: buildSpecificationPatcher.AddReference(
+					model_core.MetadataEntry[dag.ObjectContentsWalker]{
+						LocalReference: createdObject.Value.GetLocalReference(),
+						Metadata: model_filesystem.NewCapturedDirectoryWalker(
+							directoryParameters.DirectoryAccessParameters,
+							fileParameters,
+							capturedRootDirectory,
+							&createdObjectTree,
+							decodingParameters,
+						),
+					},
+				),
+				DecodingParameters: decodingParameters,
+			},
+		), nil
+	}
+
+	for i, moduleName := range moduleNames {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("module %#v", moduleName.String()),
+			createdModuleRootDirectories[i],
+			moduleRootDirectories[i],
+			moduleDepths[moduleName],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture root directory for module %#v: %s", moduleName.String(), err))
+		}
 		buildSpecification.Modules = append(
 			buildSpecification.Modules,
 			&model_analysis_pb.BuildSpecification_Value_Module{
-				Name: moduleName.String(),
-				RootDirectoryReference: createdRootDirectory.ToDirectoryReference(
-					&model_core_pb.DecodableReference{
-						Reference: buildSpecificationPatcher.AddReference(
-							model_core.MetadataEntry[dag.ObjectContentsWalker]{
-								LocalReference: createdObject.Value.GetLocalReference(),
-								Metadata: model_filesystem.NewCapturedDirectoryWalker(
-									directoryParameters.DirectoryAccessParameters,
-									fileParameters,
-									moduleRootDirectories[i],
-									&createdObjectTree,
-									decodingParameters,
-								),
-							},
-						),
-						DecodingParameters: decodingParameters,
-					},
-				),
+				Name:                   moduleName.String(),
+				RootDirectoryReference: rootDirectoryReference,
+			},
+		)
+	}
+	for i, vendoredRepo := range vendoredRepos {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("vendored repository %q", "@@"+vendoredRepo.CanonicalRepo.String()),
+			createdVendoredRepoRootDirectories[i],
+			vendoredRepoRootDirectories[i],
+			vendoredRepoDepths[i],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture vendored repository %q: %s", "@@"+vendoredRepo.CanonicalRepo.String(), err))
+		}
+		buildSpecification.VendoredRepos = append(
+			buildSpecification.VendoredRepos,
+			&model_analysis_pb.BuildSpecification_Value_VendoredRepo{
+				CanonicalRepo:          vendoredRepo.CanonicalRepo.String(),
+				RootDirectoryReference: rootDirectoryReference,
+			},
+		)
+	}
+	for i, vendoredRegistry := range vendoredRegistries {
+		rootDirectoryReference, err := captureRootDirectory(
+			fmt.Sprintf("vendored registry %q", vendoredRegistry.URL),
+			createdVendoredRegistryRootDirectories[i],
+			vendoredRegistryRootDirectories[i],
+			vendoredRegistryDepths[i],
+		)
+		if err != nil {
+			logger.Fatal(formatted.Textf("Failed to capture vendored registry %q: %s", vendoredRegistry.URL, err))
+		}
+		files := make([]*model_analysis_pb.BuildSpecification_Value_VendoredRegistry_File, 0, len(vendoredRegistry.Files))
+		for _, file := range vendoredRegistry.Files {
+			files = append(files, &model_analysis_pb.BuildSpecification_Value_VendoredRegistry_File{
+				Path:   file.Path,
+				Sha256: file.SHA256,
+			})
+		}
+		buildSpecification.VendoredRegistries = append(
+			buildSpecification.VendoredRegistries,
+			&model_analysis_pb.BuildSpecification_Value_VendoredRegistry{
+				Url:                    vendoredRegistry.URL,
+				RootDirectoryReference: rootDirectoryReference,
+				Files:                  files,
 			},
 		)
 	}
@@ -415,7 +813,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	// TODO: Should these be moved into special overrides?
 	/*
 		var invocationID uuid.UUID
-		if v := args.CommonFlags.InvocationId; v == "" {
+		if v := commonFlags.InvocationId; v == "" {
 			invocationID = util.Must(uuid.NewRandom())
 		} else {
 			invocationID, err = uuid.Parse(v)
@@ -424,7 +822,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 			}
 		}
 		var buildRequestID uuid.UUID
-		if v := args.CommonFlags.BuildRequestId; v == "" {
+		if v := commonFlags.BuildRequestId; v == "" {
 			buildRequestID = util.Must(uuid.NewRandom())
 		} else {
 			buildRequestID, err = uuid.Parse(v)
@@ -478,8 +876,8 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Failed to create overrides list object: %s", err))
 	}
 
-	targetPatterns := make([]string, 0, len(args.Arguments))
-	for _, targetPattern := range args.Arguments {
+	targetPatterns := make([]string, 0, len(targetPatternArguments))
+	for _, targetPattern := range targetPatternArguments {
 		apparentTargetPattern, err := currentPackage.AppendTargetPattern(targetPattern)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid target pattern %#v: %s", targetPattern, err))
@@ -491,8 +889,8 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	// CLI only supports specifying build setting overrides and a
 	// single list of platforms. However, there is no way to pick
 	// different build setting overrides depending on the platform.
-	commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(args.BuildSettingOverrides))
-	for _, override := range args.BuildSettingOverrides {
+	commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(resolvedBuildSettingOverrides))
+	for _, override := range resolvedBuildSettingOverrides {
 		apparentLabel, err := currentPackage.AppendTargetPattern(override.Label)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid build setting override --%s=%#v: %s", override.Label, override.Value, err))
@@ -505,7 +903,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 			},
 		)
 	}
-	targetPlatforms := strings.FieldsFunc(args.BuildFlags.Platforms, func(r rune) bool { return r == ',' })
+	targetPlatforms := strings.FieldsFunc(buildFlags.Platforms, func(r rune) bool { return r == ',' })
 	if len(targetPlatforms) == 0 {
 		targetPlatforms = []string{"@platforms//host"}
 	}
@@ -529,6 +927,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		&model_analysis_pb.BuildResult_Key{
 			TargetPatterns: targetPatterns,
 			Configurations: configurations,
+			OutputGroups:   outputGroups,
 		},
 	)
 	buildResultKey, _ := patchedBuildResultKey.SortAndSetReferences()
@@ -557,13 +956,32 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 			return nil, err
 		}
 
+		requestedKeys := []*model_evaluation_pb.Keys{{
+			Level: &model_evaluation_pb.Keys_Leaf{
+				Leaf: patchedBuildResultKeyAny.Merge(patcher),
+			},
+		}}
+		var additionalKeys []proto.Message
+		if additionalRequestedKeys != nil {
+			additionalKeys = additionalRequestedKeys(targetPatterns, configurations)
+		}
+		for _, key := range additionalKeys {
+			patchedKeyAny, err := model_core.MarshalAny(
+				model_core.NewSimplePatchedMessage[dag.ObjectContentsWalker](key),
+			)
+			if err != nil {
+				return nil, err
+			}
+			requestedKeys = append(requestedKeys, &model_evaluation_pb.Keys{
+				Level: &model_evaluation_pb.Keys_Leaf{
+					Leaf: patchedKeyAny.Merge(patcher),
+				},
+			})
+		}
+
 		return model_core.NewProtoBinaryMarshaler(&model_evaluation_pb.Action{
 			OverridesReference: overridesReference,
-			RequestedKeys: []*model_evaluation_pb.Keys{{
-				Level: &model_evaluation_pb.Keys_Leaf{
-					Leaf: patchedBuildResultKeyAny.Merge(patcher),
-				},
-			}},
+			RequestedKeys:      requestedKeys,
 		}), nil
 	})
 	if err != nil {
@@ -575,23 +993,18 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	}
 
 	logger.Info(formatted.Text("Uploading module sources"))
-	instanceName, err := object.NewInstanceName(args.CommonFlags.RemoteInstanceName)
+	instanceName, err := object.NewInstanceName(commonFlags.RemoteInstanceName)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Invalid --remote_instance_name=%#v: %s", args.CommonFlags.RemoteInstanceName, err))
+		logger.Fatal(formatted.Textf("Invalid --remote_instance_name=%#v: %s", commonFlags.RemoteInstanceName, err))
 	}
 	actionReference := createdAction.Value.GetLocalReference()
 	actionGlobalReference := instanceName.WithLocalReference(actionReference)
 	dagUploader := dag_grpc.NewUploader(
 		dag_pb.NewUploaderClient(remoteCacheClient),
 		semaphore.NewWeighted(10),
-		// The effective limit is the minimum of this value and the
-		// server's (see dag.uploader_server), so a value too small here
-		// cannot be raised by reconfiguring the server. These bounds
-		// need to accommodate the whole workspace of the largest repo
-		// being built.
 		object.NewLimit(&object_pb.Limit{
-			Count:     1000000,
-			SizeBytes: 1 << 30,
+			Count:     1000,
+			SizeBytes: 1 << 20,
 		}),
 	)
 	if err := dagUploader.UploadDAG(
@@ -605,27 +1018,27 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Failed to upload workspace directory: %s", err))
 	}
 
-	clientPrivateKeyData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientPrivateKey)
+	clientPrivateKeyData, err := os.ReadFile(commonFlags.RemoteExecutorClientPrivateKey)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_private_key=%#v: %s", commonFlags.RemoteExecutorClientPrivateKey, err))
 	}
 	clientPrivateKey, err := crypto.ParsePEMWithPKCS8ECDHPrivateKey(clientPrivateKeyData)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_private_key=%#v: %s", args.CommonFlags.RemoteExecutorClientPrivateKey, err))
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_private_key=%#v: %s", commonFlags.RemoteExecutorClientPrivateKey, err))
 	}
 
-	clientCertificateChainData, err := os.ReadFile(args.CommonFlags.RemoteExecutorClientCertificateChain)
+	clientCertificateChainData, err := os.ReadFile(commonFlags.RemoteExecutorClientCertificateChain)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+		logger.Fatal(formatted.Textf("Failed to read --remote_executor_client_certificate_chain=%#v: %s", commonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 	clientCertificateChain, err := crypto.ParsePEMWithCertificateChain(clientCertificateChainData)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
+		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", commonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 
-	remoteExecutorClient, err := newGRPCClient(args.CommonFlags.RemoteExecutor, &args.CommonFlags)
+	remoteExecutorClient, err := newGRPCClient(commonFlags.RemoteExecutor, commonFlags)
 	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", args.CommonFlags.RemoteExecutor, err))
+		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", commonFlags.RemoteExecutor, err))
 	}
 	builderClient := model_executewithstorage.NewNamespaceAddingClient(
 		model_executewithstorage.NewProtoClient(
@@ -640,7 +1053,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 		instanceName,
 	)
 
-	builderPKIXPublicKey, err := base64.StdEncoding.DecodeString(args.CommonFlags.RemoteExecutorBuilderPkixPublicKey)
+	builderPKIXPublicKey, err := base64.StdEncoding.DecodeString(commonFlags.RemoteExecutorBuilderPkixPublicKey)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to base64 decode --remote_executor_builder_pkix_public_key: %s", err))
 	}
@@ -652,7 +1065,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	decodableActionReference := model_core.CopyDecodable(createdAction, actionReference)
 	actionReferenceStr := model_core.DecodableLocalReferenceToString(decodableActionReference)
 	actionLink := formatted.Text(actionReferenceStr)
-	browserURL := args.CommonFlags.BrowserUrl
+	browserURL := commonFlags.BrowserUrl
 	evaluationActionObjectFormat := model_core.NewProtoObjectFormat(&model_evaluation_pb.Action{})
 	evaluationActionPathComponents, _ := model_core.ObjectFormatToPath(evaluationActionObjectFormat)
 	if browserURL != "" {
@@ -833,27 +1246,364 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	if f := result.Message.Failure; f != nil {
 		printStackTrace(namespace, model_core.Nested(result, f.StackTraceKeys), logger, &jsonFormatter, browserURL, outcomesReference)
 		logger.Fatal(formatted.Textf("Failed to perform build: %s", status.FromProto(f.Status)))
-	} else if outcomesReference != nil {
-		outcomesReferenceNode := formatted.Text(model_core.DecodableLocalReferenceToString(*outcomesReference))
-		if browserURL != "" {
-			if evaluationURL, err := url.JoinPath(
-				browserURL,
-				"evaluation",
-				namespace.InstanceName.AsURLSafeComponent(),
-				namespace.ReferenceFormat.ToProto().String(),
-				model_core.DecodableLocalReferenceToString(*outcomesReference),
-				base64.RawURLEncoding.EncodeToString(marshaledBuildResultKey),
-			); err == nil {
-				outcomesReferenceNode = formatted.Link(evaluationURL, outcomesReferenceNode)
-			}
+	}
+	if outcomesReference == nil {
+		return nil
+	}
+
+	outcomesReferenceNode := formatted.Text(model_core.DecodableLocalReferenceToString(*outcomesReference))
+	if browserURL != "" {
+		if evaluationURL, err := url.JoinPath(
+			browserURL,
+			"evaluation",
+			namespace.InstanceName.AsURLSafeComponent(),
+			namespace.ReferenceFormat.ToProto().String(),
+			model_core.DecodableLocalReferenceToString(*outcomesReference),
+			base64.RawURLEncoding.EncodeToString(marshaledBuildResultKey),
+		); err == nil {
+			outcomesReferenceNode = formatted.Link(evaluationURL, outcomesReferenceNode)
 		}
-		logger.Info(
-			formatted.Join(
-				formatted.Text("Got build results "),
-				outcomesReferenceNode,
+	}
+	logger.Info(
+		formatted.Join(
+			formatted.Text("Got build results "),
+			outcomesReferenceNode,
+		),
+	)
+
+	return &Outcome{
+		Context:                   ctx,
+		Logger:                    logger,
+		ParsedObjectPoolIngester:  parsedObjectPoolIngester,
+		ActionEncoder:             actionEncoder,
+		ReferenceFormat:           referenceFormat,
+		DirectoryAccessParameters: directoryParameters.DirectoryAccessParameters,
+		FileAccessParameters:      fileParameters.FileAccessParameters,
+		OutcomesReference:         *outcomesReference,
+
+		TargetPatterns: targetPatterns,
+		Configurations: configurations,
+		OutputGroups:   outputGroups,
+
+		buildFlags:    buildFlags,
+		workspacePath: workspacePath,
+	}
+}
+
+// DoBuild implements the "bazel build" command, which builds a
+// specified set of targets in the current workspace.
+func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
+	o := PerformBuild(
+		"build",
+		&args.CommonFlags,
+		&args.BuildFlags,
+		args.BuildSettingOverrides,
+		args.Arguments,
+		/* additionalRequestedKeys = */ nil,
+		workspacePath,
+	)
+	if o == nil {
+		return
+	}
+
+	buildResultValue, err := LookUpValue[model_analysis_pb.BuildResult_Value](o, &model_analysis_pb.BuildResult_Key{
+		TargetPatterns: o.TargetPatterns,
+		Configurations: o.Configurations,
+		OutputGroups:   o.OutputGroups,
+	})
+	if err != nil {
+		o.Logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))
+	}
+	if err := o.MaterializeBuildOutputs(model_core.Nested(buildResultValue, buildResultValue.Message.RootDirectory)); err != nil {
+		o.Logger.Fatal(formatted.Textf("Failed to materialize build outputs: %s", err))
+	}
+}
+
+// LookUpValue extracts the value of a single key that was requested as
+// part of a build. The key MUST NOT contain any references.
+func LookUpValue[
+	TMessage any,
+	TMessagePtr interface {
+		*TMessage
+		proto.Message
+	},
+](o *Outcome, key proto.Message) (model_core.Message[TMessagePtr, object.LocalReference], error) {
+	keyAny, err := model_core.MarshalTopLevelAny(
+		model_core.NewSimpleTopLevelMessage[object.LocalReference](key),
+	)
+	if err != nil {
+		var bad model_core.Message[TMessagePtr, object.LocalReference]
+		return bad, fmt.Errorf("failed to marshal key: %w", err)
+	}
+	return lookUpEvaluationValue[TMessage, TMessagePtr](
+		o.Context,
+		o.ParsedObjectPoolIngester,
+		o.ActionEncoder,
+		o.OutcomesReference,
+		keyAny,
+		o.ReferenceFormat,
+	)
+}
+
+// lookUpEvaluationValue extracts the value of a single key from the list
+// of outcomes that a build emitted.
+func lookUpEvaluationValue[
+	TMessage any,
+	TMessagePtr interface {
+		*TMessage
+		proto.Message
+	},
+](
+	ctx context.Context,
+	parsedObjectPoolIngester *model_parser.ParsedObjectPoolIngester[object.LocalReference],
+	actionEncoder model_encoding.DeterministicBinaryEncoder,
+	outcomesReference model_core.Decodable[object.LocalReference],
+	keyAny model_core.TopLevelMessage[*anypb.Any, object.LocalReference],
+	referenceFormat object.ReferenceFormat,
+) (model_core.Message[TMessagePtr, object.LocalReference], error) {
+	var bad model_core.Message[TMessagePtr, object.LocalReference]
+	keyReference, err := model_core.ComputeTopLevelMessageReference(keyAny, referenceFormat)
+	if err != nil {
+		return bad, err
+	}
+
+	evaluationsReader := model_parser.LookupParsedObjectReader(
+		parsedObjectPoolIngester,
+		model_parser.NewChainedObjectParser(
+			model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+			model_parser.NewProtoListObjectParser[object.LocalReference, model_evaluation_pb.Evaluations](),
+		),
+	)
+	evaluationsList, err := evaluationsReader.ReadObject(ctx, outcomesReference)
+	if err != nil {
+		return bad, fmt.Errorf("failed to read outcomes list: %w", err)
+	}
+
+	evaluations, err := btree.Find(
+		ctx,
+		evaluationsReader,
+		evaluationsList,
+		func(entry model_core.Message[*model_evaluation_pb.Evaluations, object.LocalReference]) (int, *model_core_pb.DecodableReference) {
+			switch level := entry.Message.Level.(type) {
+			case *model_evaluation_pb.Evaluations_Leaf_:
+				return bytes.Compare(keyReference.GetRawReference(), level.Leaf.KeyReference), nil
+			case *model_evaluation_pb.Evaluations_Parent_:
+				return bytes.Compare(keyReference.GetRawReference(), level.Parent.FirstKeyReference), level.Parent.Reference
+			default:
+				return 0, nil
+			}
+		},
+	)
+	if err != nil {
+		return bad, fmt.Errorf("failed to look up key in outcomes list: %w", err)
+	}
+	if !evaluations.IsSet() {
+		return bad, errors.New("key is not present in the outcomes list")
+	}
+	leaf, ok := evaluations.Message.Level.(*model_evaluation_pb.Evaluations_Leaf_)
+	if !ok {
+		return bad, errors.New("outcomes list entry is not a valid leaf")
+	}
+
+	var evaluation model_core.Message[*model_evaluation_pb.Evaluation, object.LocalReference]
+	switch level := leaf.Leaf.Graphlet.GetEvaluation().(type) {
+	case *model_evaluation_pb.Graphlet_EvaluationInline:
+		evaluation = model_core.Nested(evaluations, level.EvaluationInline)
+	case *model_evaluation_pb.Graphlet_EvaluationExternal:
+		evaluationReader := model_parser.LookupParsedObjectReader(
+			parsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				model_parser.NewEncodedObjectParser[object.LocalReference](actionEncoder),
+				model_parser.NewProtoObjectParser[object.LocalReference, model_evaluation_pb.Evaluation](),
 			),
 		)
+		evaluation, err = model_parser.Dereference(ctx, evaluationReader, model_core.Nested(evaluations, level.EvaluationExternal))
+		if err != nil {
+			return bad, fmt.Errorf("failed to read evaluation: %w", err)
+		}
+	default:
+		return bad, errors.New("evaluation is not present")
 	}
+
+	value, err := model_core.UnmarshalAnyNew(model_core.Nested(evaluation, evaluation.Message.Value))
+	if err != nil {
+		return bad, fmt.Errorf("failed to unmarshal value: %w", err)
+	}
+	message, ok := value.Message.(TMessagePtr)
+	if !ok {
+		return bad, fmt.Errorf("value has type %s, while %s was expected", value.Message.ProtoReflect().Descriptor().FullName(), TMessagePtr(new(TMessage)).ProtoReflect().Descriptor().FullName())
+	}
+	return model_core.Nested(value.Decay(), message), nil
+}
+
+// GetOutputPath returns the directory into which the output files of the
+// build were written.
+func (o *Outcome) GetOutputPath() (string, error) {
+	return getOutputPath(o.buildFlags, o.workspacePath)
+}
+
+// GetWorkspacePath returns the path of the workspace in which the build
+// was performed.
+func (o *Outcome) GetWorkspacePath() (string, error) {
+	return localPathString(o.workspacePath)
+}
+
+// MaterializeBuildOutputs writes the output files of a build to the
+// output path, and creates convenience symbolic links pointing into it.
+func (o *Outcome) MaterializeBuildOutputs(rootDirectory model_core.Message[*model_filesystem_pb.DirectoryContents, object.LocalReference]) error {
+	if rootDirectory.Message == nil {
+		// The build did not yield any output files.
+		return nil
+	}
+
+	outputPathStr, err := o.GetOutputPath()
+	if err != nil {
+		return err
+	}
+	filesWritten, symlinksWritten, err := o.MaterializeDirectory(rootDirectory, outputPathStr)
+	if err != nil {
+		return err
+	}
+	o.Logger.Info(formatted.Textf("Wrote %d output files and %d symbolic links to %s", filesWritten, symlinksWritten, outputPathStr))
+
+	outputDirectory, err := filesystem.NewLocalDirectory(path.LocalFormat.NewParser(outputPathStr))
+	if err != nil {
+		return fmt.Errorf("failed to open output directory: %w", err)
+	}
+	defer outputDirectory.Close()
+	return createConvenienceSymlinks(o.buildFlags, o.workspacePath, outputPathStr, outputDirectory)
+}
+
+// MaterializeDirectory writes a directory hierarchy that is stored in
+// object storage to a directory on the local system, creating the
+// directory if it does not exist yet. It returns the number of files and
+// symbolic links that were written.
+func (o *Outcome) MaterializeDirectory(contents model_core.Message[*model_filesystem_pb.DirectoryContents, object.LocalReference], directoryPathStr string) (int, int, error) {
+	if err := os.MkdirAll(directoryPathStr, 0o777); err != nil {
+		return 0, 0, fmt.Errorf("failed to create directory %#v: %w", directoryPathStr, err)
+	}
+	directory, err := filesystem.NewLocalDirectory(path.LocalFormat.NewParser(directoryPathStr))
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to open directory %#v: %w", directoryPathStr, err)
+	}
+	defer directory.Close()
+
+	directoryEncoderObjectParser := model_parser.NewEncodedObjectParser[object.LocalReference](o.DirectoryAccessParameters.GetEncoder())
+	m := outputRootMaterializer{
+		context: o.Context,
+		directoryContentsReader: model_parser.LookupParsedObjectReader(
+			o.ParsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				directoryEncoderObjectParser,
+				model_parser.NewProtoObjectParser[object.LocalReference, model_filesystem_pb.DirectoryContents](),
+			),
+		),
+		leavesReader: model_parser.LookupParsedObjectReader(
+			o.ParsedObjectPoolIngester,
+			model_parser.NewChainedObjectParser(
+				directoryEncoderObjectParser,
+				model_parser.NewProtoObjectParser[object.LocalReference, model_filesystem_pb.Leaves](),
+			),
+		),
+		fileReader: model_filesystem.NewFileReader(
+			model_parser.LookupParsedObjectReader(
+				o.ParsedObjectPoolIngester,
+				model_parser.NewChainedObjectParser(
+					model_parser.NewEncodedObjectParser[object.LocalReference](o.FileAccessParameters.GetFileContentsListEncoder()),
+					model_filesystem.NewFileContentsListObjectParser[object.LocalReference](),
+				),
+			),
+			model_parser.LookupParsedObjectReader(
+				o.ParsedObjectPoolIngester,
+				model_parser.NewChainedObjectParser(
+					model_parser.NewEncodedObjectParser[object.LocalReference](o.FileAccessParameters.GetChunkEncoder()),
+					model_parser.NewRawObjectParser[object.LocalReference](),
+				),
+			),
+			semaphore.NewWeighted(int64(runtime.NumCPU())),
+		),
+	}
+	if err := m.materializeDirectory(contents, directory); err != nil {
+		return 0, 0, err
+	}
+	return m.filesWritten, m.symlinksWritten, nil
+}
+
+// localPathString renders a parsed path as a string in the format of the
+// local system.
+func localPathString(p path.Parser) (string, error) {
+	builder, scopeWalker := path.EmptyBuilder.Join(path.NewAbsoluteScopeWalker(path.VoidComponentWalker))
+	if err := path.Resolve(p, scopeWalker); err != nil {
+		return "", err
+	}
+	return path.LocalFormat.GetString(builder)
+}
+
+// getOutputPath returns the directory into which output files should be
+// written.
+func getOutputPath(buildFlags *arguments.BuildFlags, workspacePath path.Parser) (string, error) {
+	if p := buildFlags.OutputPath; p != "" {
+		return p, nil
+	}
+	workspacePathStr, err := localPathString(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(workspacePathStr, "bonanza-out"), nil
+}
+
+// createConvenienceSymlinks creates symbolic links in the workspace that
+// point to the directories inside the output path in which the output
+// files of the root repo are placed. This mirrors the "bazel-bin"
+// symbolic link that Bazel creates.
+func createConvenienceSymlinks(buildFlags *arguments.BuildFlags, workspacePath path.Parser, outputPathStr string, outputDirectory filesystem.Directory) error {
+	symlinkPrefix := buildFlags.SymlinkPrefix
+	if symlinkPrefix == "/" {
+		return nil
+	}
+
+	// Only create a "bin" symbolic link if the build used a single
+	// configuration, as there is no way to disambiguate otherwise.
+	bazelOut, ok := path.NewComponent("bazel-out")
+	if !ok {
+		panic("invalid component name")
+	}
+	bazelOutDirectory, err := outputDirectory.EnterDirectory(bazelOut)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	configurations, err := bazelOutDirectory.ReadDir()
+	bazelOutDirectory.Close()
+	if err != nil {
+		return err
+	}
+	if len(configurations) != 1 {
+		return nil
+	}
+
+	workspacePathStr, err := localPathString(workspacePath)
+	if err != nil {
+		return err
+	}
+	workspaceDirectory, err := filesystem.NewLocalDirectory(workspacePath)
+	if err != nil {
+		return err
+	}
+	defer workspaceDirectory.Close()
+
+	binName, ok := path.NewComponent(symlinkPrefix + "bin")
+	if !ok {
+		return fmt.Errorf("invalid --symlink_prefix=%#v", symlinkPrefix)
+	}
+	binTarget := filepath.Join(outputPathStr, "bazel-out", configurations[0].Name().String(), "bin")
+	if relativeBinTarget, err := filepath.Rel(workspacePathStr, binTarget); err == nil {
+		binTarget = relativeBinTarget
+	}
+	workspaceDirectory.Remove(binName)
+	return workspaceDirectory.Symlink(path.LocalFormat.NewParser(binTarget), binName)
 }
 
 func formatKey(namespace object.Namespace, keyAny model_core.Message[*model_core_pb.Any, object.LocalReference], jsonFormatter *messageJSONFormatter, browserURL string, outcomesReference *model_core.Decodable[object.LocalReference], longestType int) formatted.Node {

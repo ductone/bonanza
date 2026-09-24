@@ -13,6 +13,7 @@ import (
 	"time"
 
 	model_command "bonanza.build/pkg/model/command"
+	model_command_reapi "bonanza.build/pkg/model/command/reapi"
 	model_executewithstorage "bonanza.build/pkg/model/executewithstorage"
 	model_filesystem_virtual "bonanza.build/pkg/model/filesystem/virtual"
 	model_parser "bonanza.build/pkg/model/parser"
@@ -104,6 +105,90 @@ func main() {
 		}
 		schedulerClient := remoteworker_pb.NewOperationQueueClient(schedulerConnection)
 
+		objectStoreSemaphore := semaphore.NewWeighted(configuration.ObjectStoreConcurrency)
+		if len(configuration.ReapiRunners) > 0 {
+			if len(configuration.BuildDirectories) > 0 {
+				return status.Error(codes.InvalidArgument, "REAPI runners and FUSE build directories are mutually exclusive")
+			}
+			for _, runnerConfiguration := range configuration.ReapiRunners {
+				if runnerConfiguration.Concurrency < 1 {
+					return status.Error(codes.InvalidArgument, "REAPI runner concurrency must be positive")
+				}
+				var queue string
+				switch runnerConfiguration.Queue {
+				case bonanza_worker.ReapiRunnerConfiguration_QUEUE_SMALL:
+					queue = model_command_reapi.QueueSmall
+				case bonanza_worker.ReapiRunnerConfiguration_QUEUE_LINK:
+					queue = model_command_reapi.QueueLink
+				default:
+					return status.Error(codes.InvalidArgument, "REAPI runner queue must be small or link")
+				}
+
+				platformPrivateKeys, err := remoteworker.ParsePlatformPrivateKeys(runnerConfiguration.PlatformPrivateKeys)
+				if err != nil {
+					return err
+				}
+				clientCertificateVerifier, err := x509.NewClientCertificateVerifierFromConfiguration(runnerConfiguration.ClientCertificateVerifier, dependenciesGroup)
+				if err != nil {
+					return err
+				}
+				reapiConnection, err := grpcClientFactory.NewClientFromConfiguration(runnerConfiguration.ReapiGrpcClient, dependenciesGroup)
+				if err != nil {
+					return util.StatusWrap(err, "Failed to create REAPI gRPC client")
+				}
+				reapiClient := model_command_reapi.NewClient(reapiConnection, runnerConfiguration.InstanceName)
+
+				concurrencyLength := len(strconv.FormatUint(runnerConfiguration.Concurrency-1, 10))
+				for threadID := uint64(0); threadID < runnerConfiguration.Concurrency; threadID++ {
+					workerID := map[string]string{}
+					if runnerConfiguration.Concurrency > 1 {
+						workerID["thread"] = fmt.Sprintf("%0*d", concurrencyLength, threadID)
+					}
+					maps.Copy(workerID, runnerConfiguration.WorkerId)
+					workerName, err := json.Marshal(workerID)
+					if err != nil {
+						return util.StatusWrap(err, "Failed to marshal REAPI worker ID")
+					}
+
+					threadExecutor, err := model_command_reapi.NewExecutor(
+						objectDownloader,
+						objectStoreSemaphore,
+						parsedObjectPool,
+						dagUploader,
+						objectContentsWalkerSemaphore,
+						reapiClient,
+						model_command_reapi.Configuration{
+							InstanceName: runnerConfiguration.InstanceName,
+							Queue:        queue,
+							WorkerID:     workerID,
+						},
+					)
+					if err != nil {
+						return util.StatusWrap(err, "Failed to create REAPI worker thread executor")
+					}
+					client, err := remoteworker.NewClient(
+						schedulerClient,
+						remoteworker.NewProtoExecutor(
+							model_executewithstorage.NewExecutor(threadExecutor),
+						),
+						clock.SystemClock,
+						random.CryptoThreadSafeGenerator,
+						platformPrivateKeys,
+						clientCertificateVerifier,
+						workerID,
+						runnerConfiguration.SizeClass,
+						runnerConfiguration.IsLargestSizeClass,
+					)
+					if err != nil {
+						return util.StatusWrap(err, "Failed to create REAPI remote worker client")
+					}
+					remoteworker.LaunchWorkerThread(siblingsGroup, client.Run, string(workerName))
+				}
+			}
+			lifecycleState.MarkReadyAndWait(siblingsGroup)
+			return nil
+		}
+
 		// Location for storing temporary file objects. This is
 		// currently only used by the virtual file system to store
 		// output files of build actions.
@@ -112,7 +197,6 @@ func main() {
 			return util.StatusWrap(err, "Failed to create file pool")
 		}
 
-		objectStoreSemaphore := semaphore.NewWeighted(configuration.ObjectStoreConcurrency)
 		for _, buildDirectoryConfiguration := range configuration.BuildDirectories {
 			mount, handleAllocator, err := virtual_configuration.NewMountFromConfiguration(
 				buildDirectoryConfiguration.Mount,

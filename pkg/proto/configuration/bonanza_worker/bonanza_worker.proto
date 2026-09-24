@@ -45,6 +45,13 @@ message ApplicationConfiguration {
   // The maximum number of concurrent read operations this process
   // should issue against object storage.
   int64 object_store_concurrency = 8;
+
+  // Workers that execute supported Bonanza command actions through C1's
+  // Buildbarn REv2 endpoint. This backend does not create a FUSE mount.
+  //
+  // This field and build_directories are mutually exclusive. Leaving both
+  // unset preserves the existing configuration behavior.
+  repeated ReapiRunnerConfiguration reapi_runners = 9;
 }
 
 message BuildDirectoryConfiguration {
@@ -192,4 +199,46 @@ message RunnerConfiguration {
   // directory. This should typically be set to the primary group of the
   // user that is used by bb_runner to run actions.
   uint32 build_directory_owner_group_id = 16;
+}
+
+// ReapiRunnerConfiguration configures a Bonanza worker that translates
+// command actions into REv2 Action, Command, Directory, and CAS objects.
+message ReapiRunnerConfiguration {
+  enum Queue {
+    QUEUE_UNSPECIFIED = 0;
+    QUEUE_SMALL = 1;
+    QUEUE_LINK = 2;
+  }
+
+  // Buildbarn endpoint exposing REv2 Execution, CAS, and ByteStream.
+  buildbarn.configuration.grpc.ClientConfiguration reapi_grpc_client = 1;
+
+  // REv2 instance name. The C1 Buildbarn endpoint uses the empty instance.
+  string instance_name = 2;
+
+  // The only C1 REv2 platform property emitted by this backend is
+  // c1.queue, using this exact queue value.
+  Queue queue = 3;
+
+  // Number of scheduler actions this worker accepts concurrently.
+  uint64 concurrency = 4;
+
+  // Elliptic-curve private keys used to decrypt scheduler actions. These
+  // keys and the certificate verifier authenticate the Bonanza scheduler
+  // protocol; they are never sent to Buildbarn.
+  repeated string platform_private_keys = 5;
+
+  // Verifies the client certificate carried by encrypted Bonanza actions.
+  buildbarn.configuration.x509.ClientCertificateVerifierConfiguration
+      client_certificate_verifier = 6;
+
+  // Scheduler size class metadata for this worker.
+  uint32 size_class = 7;
+
+  // Whether this is the largest scheduler size class for the platform.
+  bool is_largest_size_class = 8;
+
+  // Additional scheduler worker ID fields. A thread field is added when
+  // concurrency is greater than one.
+  map<string, string> worker_id = 9;
 }

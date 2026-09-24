@@ -37,7 +37,6 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
 	"github.com/buildbarn/bb-storage/pkg/filesystem/path"
 	"github.com/buildbarn/bb-storage/pkg/util"
-	"github.com/google/uuid"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -220,6 +219,17 @@ func captureLog(ctx context.Context, buildDirectory virtual.PrepopulatedDirector
 
 var actionObjectFormat = model_core.NewProtoObjectFormat(&model_command_pb.Action{})
 
+// Repository commands mutate the input tree or require a stable path across
+// executions. The generic native runner does not isolate their filesystem or
+// network, so neither a valid client certificate nor a scheduler queue makes
+// them safe to execute here.
+func validateNativeCommand(command *model_command_pb.Command) error {
+	if command.GetNeedsWritableInputFiles() || command.GetStableInputRootPathUuid() != "" {
+		return status.Error(codes.FailedPrecondition, "stateful repository action requires an isolated worker and verified fetch proxy")
+	}
+	return nil
+}
+
 func (e *localExecutor) Execute(ctx context.Context, action *model_executewithstorage.Action[object.GlobalReference], executionTimeout time.Duration, executionEvents chan<- model_core.Decodable[object.LocalReference]) (model_core.Decodable[object.LocalReference], time.Duration, remoteworker_pb.CurrentState_Completed_Result, error) {
 	// Reject actions that this worker can't process.
 	if !proto.Equal(action.Format, actionObjectFormat) {
@@ -288,6 +298,10 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 		command, err := model_parser.Dereference(ctx, commandReader, model_core.Nested(actionMessage, actionMessage.Message.CommandReference))
 		if err != nil {
 			result.Status = status.Convert(util.StatusWrap(err, "Failed to read command")).Proto()
+			return &result
+		}
+		if err := validateNativeCommand(command.Message); err != nil {
+			result.Status = status.Convert(err).Proto()
 			return &result
 		}
 
@@ -413,10 +427,7 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 		)
 		defer buildDirectory.RemoveAllChildren(true)
 
-		// For regular build actions we want input files to be
-		// read-only. This matches the behavior of existing
-		// tools like Bazel and Buildbarn. However, repository
-		// rules require input files to be writable.
+		// This runner only executes commands with read-only input files.
 		inputFileReader := model_filesystem.NewFileReader(
 			model_parser.LookupParsedObjectReader(
 				parsedObjectPoolIngester,
@@ -434,28 +445,14 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			),
 			e.objectStoreSemaphore,
 		)
-		var inputFileFactory model_filesystem_virtual.FileFactory
-		if command.Message.NeedsWritableInputFiles {
-			inputFileFactory = model_filesystem_virtual.NewStatefulHandleAllocatingFileFactory(
-				model_filesystem_virtual.NewMutationTrackingFileFactory(
-					model_filesystem_virtual.NewObjectInitializedFileFactory(
-						ctxWithIOError,
-						inputFileReader,
-						fileAllocator,
-					),
-				),
-				e.handleAllocator,
-			)
-		} else {
-			inputFileFactory = model_filesystem_virtual.NewStatelessHandleAllocatingFileFactory(
-				model_filesystem_virtual.NewObjectBackedFileFactory(
-					ctxWithIOError,
-					inputFileReader,
-					ioErrorCapturer,
-				),
-				e.handleAllocator.New(),
-			)
-		}
+		inputFileFactory := model_filesystem_virtual.NewStatelessHandleAllocatingFileFactory(
+			model_filesystem_virtual.NewObjectBackedFileFactory(
+				ctxWithIOError,
+				inputFileReader,
+				ioErrorCapturer,
+			),
+			e.handleAllocator.New(),
+		)
 
 		// Create subdirectories that should be present when the command
 		// is executed, such as the input root directory.
@@ -494,20 +491,7 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			return &result
 		}
 
-		// If the command requires a stable input root path, we
-		// should attach the build directory name under a fixed
-		// name. We ideally don't want to do this, because it
-		// limits prevents any form of parallelism.
-		var buildDirectoryUUID uuid.UUID
-		if u := command.Message.StableInputRootPathUuid; u != "" {
-			buildDirectoryUUID, err = uuid.Parse(u)
-			if err != nil {
-				result.Status = status.Convert(util.StatusWrap(err, "Invalid stable input root path UUID")).Proto()
-				return &result
-			}
-		} else {
-			buildDirectoryUUID = util.Must(e.uuidGenerator())
-		}
+		buildDirectoryUUID := util.Must(e.uuidGenerator())
 
 		buildDirectoryName := path.MustNewComponent(buildDirectoryUUID.String())
 		if err := e.topLevelDirectory.AddChild(ctx, buildDirectoryName, virtual.DirectoryChild{}.FromDirectory(buildDirectory)); err != nil {
@@ -515,14 +499,6 @@ func (e *localExecutor) Execute(ctx context.Context, action *model_executewithst
 			return &result
 		}
 		defer e.topLevelDirectory.RemoveChild(buildDirectoryName)
-
-		// TODO: This is currently needed, because NFSv4 caches
-		// directory entries even if we fully disable any form of
-		// caching. Figure out what's going on here, so we can get rid
-		// of this unnecessary delay.
-		if command.Message.StableInputRootPathUuid != "" {
-			time.Sleep(1)
-		}
 
 		// Invoke the command.
 		buildDirectoryPath := (*path.Trace)(nil).Append(buildDirectoryName)

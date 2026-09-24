@@ -35,7 +35,7 @@ func ParseRepoDotBazel[TReference object.BasicReference, TMetadata model_core.Re
 	inlinedTreeOptions *inlinedtree.Options,
 	objectCapturer model_core.ObjectCapturer[TReference, TMetadata],
 	labelResolver pg_label.Resolver,
-) (model_core.PatchedMessage[*model_starlark_pb.InheritableAttrs, TMetadata], error) {
+) (model_core.PatchedMessage[*model_starlark_pb.InheritableAttrs, TMetadata], []string, error) {
 	thread := &starlark.Thread{
 		Name: "main",
 		Print: func(_ *starlark.Thread, msg string) {
@@ -46,6 +46,7 @@ func ParseRepoDotBazel[TReference object.BasicReference, TMetadata model_core.Re
 	thread.SetLocal(LabelResolverKey, labelResolver)
 
 	var defaultAttrs model_core.PatchedMessage[*model_starlark_pb.InheritableAttrs, TMetadata]
+	var ignoredDirectories []string
 	_, err := starlark.ExecFile(
 		thread,
 		filename.String(),
@@ -72,12 +73,23 @@ func ParseRepoDotBazel[TReference object.BasicReference, TMetadata model_core.Re
 				defaultAttrs = newDefaultAttrs
 				return starlark.None, nil
 			}),
+			"ignore_directories": starlark.NewBuiltin("ignore_directories", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+				var dirs []string
+				if err := starlark.UnpackArgs(
+					b.Name(), args, kwargs,
+					"dirs", unpack.Bind(thread, &dirs, unpack.List(unpack.String)),
+				); err != nil {
+					return nil, err
+				}
+				ignoredDirectories = append(ignoredDirectories, dirs...)
+				return starlark.None, nil
+			}),
 		},
 	)
 	if !defaultAttrs.IsSet() {
 		defaultAttrs = model_core.NewSimplePatchedMessage[TMetadata](&DefaultInheritableAttrs)
 	}
-	return defaultAttrs, err
+	return defaultAttrs, ignoredDirectories, err
 }
 
 // getDefaultInheritableAttrs parses the arguments provided to

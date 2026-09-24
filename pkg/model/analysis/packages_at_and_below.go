@@ -77,6 +77,23 @@ func (c *baseComputer[TReference, TMetadata]) ComputePackagesAtAndBelowValue(ctx
 	if !gotDirectoryReaders {
 		return PatchedPackagesAtAndBelowValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
+	canonicalPackage, err := label.NewCanonicalPackage(key.BasePackage)
+	if err != nil {
+		return PatchedPackagesAtAndBelowValue[TMetadata]{}, fmt.Errorf("invalid base package %q: %w", key.BasePackage, err)
+	}
+	repoDefaults := e.GetRepoDefaultAttrsValue(&model_analysis_pb.RepoDefaultAttrs_Key{
+		CanonicalRepo: canonicalPackage.GetCanonicalRepo().String(),
+	})
+	if !repoDefaults.IsSet() {
+		return PatchedPackagesAtAndBelowValue[TMetadata]{}, evaluation.ErrMissingDependency
+	}
+	ignored, err := newIgnoredDirectories(repoDefaults.Message.IgnoredDirectories)
+	if err != nil {
+		return PatchedPackagesAtAndBelowValue[TMetadata]{}, fmt.Errorf("invalid REPO.bazel ignore_directories: %w", err)
+	}
+	if ignored.contains(canonicalPackage.GetPackagePath()) {
+		return model_core.NewSimplePatchedMessage[TMetadata](&model_analysis_pb.PackagesAtAndBelow_Value{}), nil
+	}
 
 	packageDirectory, err := c.getPackageDirectory(ctx, e, directoryReaders.DirectoryContents, key.BasePackage)
 	if err != nil {
@@ -90,6 +107,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputePackagesAtAndBelowValue(ctx
 	checker := packageExistenceChecker[TReference]{
 		context:          ctx,
 		directoryReaders: directoryReaders,
+		basePackagePath:  canonicalPackage.GetPackagePath(),
+		ignored:          ignored,
 	}
 	packageAtBasePackage, err := directoryIsPackage(ctx, directoryReaders.Leaves, packageDirectory)
 	if err != nil {
@@ -109,6 +128,8 @@ type packageExistenceChecker[TReference any] struct {
 	context                  context.Context
 	directoryReaders         *DirectoryReaders[TReference]
 	packagesBelowBasePackage []string
+	basePackagePath          string
+	ignored                  *ignoredDirectories
 }
 
 func (pec *packageExistenceChecker[TReference]) findPackagesBelow(d model_core.Message[*model_filesystem_pb.DirectoryContents, TReference], dTrace *path.Trace) error {
@@ -118,6 +139,13 @@ func (pec *packageExistenceChecker[TReference]) findPackagesBelow(d model_core.M
 			return fmt.Errorf("invalid directory name %#v in directory %#v", entry.Name, dTrace.GetUNIXString())
 		}
 		childTrace := dTrace.Append(name)
+		repoRelativePath := childTrace.GetUNIXString()
+		if pec.basePackagePath != "" {
+			repoRelativePath = pec.basePackagePath + "/" + repoRelativePath
+		}
+		if pec.ignored.matches(repoRelativePath) {
+			continue
+		}
 
 		childDirectory, err := model_filesystem.DirectoryGetContents(
 			pec.context,

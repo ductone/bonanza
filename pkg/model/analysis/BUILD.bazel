@@ -22,8 +22,10 @@ go_library(
         "compatible_execution_platforms.go",
         "compatible_toolchains_for_type.go",
         "compiled_bzl_file.go",
+        "completed_action_result.go",
         "computer.go",
         "configured_aspect.go",
+        "configured_query_result.go",
         "configured_target.go",
         "directory_creation_parameters.go",
         "directory_readers.go",
@@ -37,6 +39,7 @@ go_library(
         "files_in_package.go",
         "files_root.go",
         "glob.go",
+        "ignored_directories.go",
         "http_archive_contents.go",
         "http_file_contents.go",
         "module_dot_bazel_contents.go",
@@ -58,6 +61,7 @@ go_library(
         "registered_execution_platforms.go",
         "registered_fetch_platform.go",
         "registered_repo_platform.go",
+        "query_result.go",
         "registered_toolchains.go",
         "registered_toolchains_for_type.go",
         "repo.go",
@@ -66,6 +70,7 @@ go_library(
         "resolved_toolchains.go",
         "root_module.go",
         "rule_implementation_wrappers.go",
+        "run_target.go",
         "select.go",
         "semantics_version.go",
         "stable_input_root_path.go",
@@ -76,14 +81,18 @@ go_library(
         "target_action_input_root.go",
         "target_action_result.go",
         "target_completion.go",
+        "target_dependencies.go",
         "target_output.go",
         "target_pattern_expansion.go",
         "target_provider.go",
         "target_providers.go",
         "target_reference_actions.go",
+        "target_test_result.go",
+        "test_result.go",
         "used_module_extension.go",
         "used_module_extensions.go",
         "user_defined_transition.go",
+        "vendored_registry.go",
         "visible_target.go",
     ],
     importpath = "bonanza.build/pkg/model/analysis",
@@ -138,25 +147,78 @@ go_library(
 )
 
 go_test(
+    name = "action_compatibility_test",
+    srcs = ["action_compatibility_test.go"],
+    embed = [":analysis"],
+)
+
+go_test(
+    name = "configured_query_test",
+    srcs = ["configured_query_result_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/proto/model/analysis",
+        "//pkg/proto/model/starlark",
+        "@com_github_stretchr_testify//require",
+    ],
+)
+
+go_test(
+    name = "ignored_directories_test",
+    srcs = ["ignored_directories_test.go"],
+    embed = [":analysis"],
+    deps = ["@com_github_stretchr_testify//require"],
+)
+
+go_test(
+    name = "repo_vendored_test",
+    srcs = ["repo_vendored_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/model/core",
+        "//pkg/proto/model/analysis",
+        "//pkg/proto/model/filesystem",
+        "//pkg/storage/object",
+        "@com_github_stretchr_testify//require",
+    ],
+)
+
+go_test(
+    name = "test_result_test",
+    srcs = ["test_result_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/model/core",
+        "//pkg/proto/model/starlark",
+    ],
+)
+
+go_test(
     name = "analysis_test",
     srcs = [
         "base_computer_test.go",
+        "completed_action_result_test.go",
         "file_root_test.go",
+        "target_completion_test.go",
         "mocks_analysis_test.go",
         "mocks_encoding_test.go",
         "mocks_filesystem_pool_test.go",
         "mocks_filesystem_test.go",
         "parameter_file_test.go",
+        "registered_repo_platform_test.go",
         "repo_platform_host_path_internal_test.go",
+        "target_action_input_root_test.go",
     ],
     embed = [":analysis"],
     deps = [
         "//pkg/model/core",
         "//pkg/model/encoding",
+        "//pkg/model/evaluation",
         "//pkg/model/filesystem",
         "//pkg/model/parser",
         "//pkg/model/starlark",
         "//pkg/proto/model/analysis",
+        "//pkg/proto/model/command",
         "//pkg/proto/model/core",
         "//pkg/proto/model/filesystem",
         "//pkg/proto/model/starlark",
@@ -169,6 +231,7 @@ go_test(
         "@com_github_stretchr_testify//require",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
         "@org_golang_google_protobuf//types/known/wrapperspb",
         "@org_golang_x_sync//semaphore",
         "@org_uber_go_mock//gomock",
@@ -179,8 +242,12 @@ gomock(
     name = "mocks_analysis",
     out = "mocks_analysis_test.go",
     interfaces = [
+        "CompletedActionResultEnvironmentForTesting",
         "ExecutionClientForTesting",
         "FileRootEnvironmentForTesting",
+        "TargetActionCommandEnvironmentForTesting",
+        "TargetActionInputRootEnvironmentForTesting",
+        "TargetCompletionEnvironmentForTesting",
     ],
     library = "//pkg/model/analysis",
     mockgen_model_library = "@org_uber_go_mock//mockgen/model",

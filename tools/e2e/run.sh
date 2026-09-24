@@ -9,6 +9,15 @@
 # successful build proves analysis, remote action execution, and
 # artifact contents all at once. The build is run twice to demonstrate
 # that the second invocation is served from the evaluation cache.
+# Afterwards the artifacts that the client wrote to the local system are
+# inspected, covering the output materialization path as well, and the
+# project's test targets are run to cover "bonanza_bazel test": a test
+# that passes, one that fails (which must be reported as a result
+# rather than a build failure), and one that only passes when
+# --test_filter reaches the test binary.
+# inspected, covering the output materialization path as well, and
+# "bonanza_bazel run" launches an executable target to cover runfiles
+# materialization and the environment that executables are given.
 #
 # Usage:
 #   tools/e2e/run.sh
@@ -182,6 +191,149 @@ for attempt in $(seq 6); do
 done
 t1=$(date +%s)
 log "cold build succeeded in $((t1 - t0))s"
+
+# --- check that the artifacts were written to the local system ---------
+# The client materializes the output files of every target that was
+# built into an output directory, using the same naming scheme that is
+# used for action input roots.
+OUT="$PROJECT/bonanza-out"
+[ -d "$OUT" ] || die "no output directory was created at $OUT"
+verify_output() { # relative path, expected substring
+  local f="$OUT/$1"
+  [ -f "$f" ] || die "expected output file $f to exist"
+  grep -q "$2" "$f" || die "output file $f does not contain $2"
+}
+BIN_DIRS=("$OUT"/bazel-out/*/bin)
+[ -d "${BIN_DIRS[0]}" ] ||
+  die "no output files were written below $OUT/bazel-out"
+BIN="${BIN_DIRS[0]#"$OUT"/}"
+verify_output "$BIN/hello.txt" "Hello from patched bonanza"
+verify_output "$BIN/verify.txt" "Hello from patched bonanza"
+verify_output "action_edges_template.txt" "name={NAME}"
+[ -L "$PROJECT/bonanza-bin" ] ||
+  die "no bonanza-bin convenience symlink was created"
+log "artifacts were materialized below $OUT"
+
+# --- run the tests in the project ----------------------------------------
+log "running //:passing_test with bonanza_bazel"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=all //:passing_test) \
+  > "$RUN_DIR/test_pass.log" 2>&1 || {
+  cat "$RUN_DIR/test_pass.log" >&2
+  die "bonanza_bazel test of //:passing_test failed"
+}
+grep -q "passing_test ran" "$RUN_DIR/test_pass.log" ||
+  die "the log of //:passing_test was not printed by --test_output=all"
+grep -q "target=@@testproject+//:passing_test" "$RUN_DIR/test_pass.log" ||
+  die "//:passing_test did not observe TEST_TARGET"
+grep -q "PASSED" "$RUN_DIR/test_pass.log" ||
+  die "//:passing_test was not reported as passing"
+
+# A test that exits non-zero is a result, not a build failure: the
+# client reports it and exits with status 3, the way Bazel does.
+log "running //:failing_test with bonanza_bazel"
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=errors //:failing_test) \
+  > "$RUN_DIR/test_fail.log" 2>&1
+FAIL_STATUS=$?
+set -e
+cat "$RUN_DIR/test_fail.log" >&2
+[ "$FAIL_STATUS" -eq 3 ] ||
+  die "expected exit status 3 for a failing test, got $FAIL_STATUS"
+grep -q "FAILED (exit code 1)" "$RUN_DIR/test_fail.log" ||
+  die "//:failing_test was not reported as failing"
+grep -q "failing_test ran" "$RUN_DIR/test_fail.log" ||
+  die "the log of //:failing_test was not printed by --test_output=errors"
+
+# --test_filter is forwarded to the test binary as
+# TESTBRIDGE_TEST_ONLY. //:filtered_test only passes when it arrives.
+log "running //:filtered_test with bonanza_bazel --test_filter"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_filter=OnlyThis //:filtered_test) \
+  > "$RUN_DIR/test_filter.log" 2>&1 || {
+  cat "$RUN_DIR/test_filter.log" >&2
+  die "--test_filter did not reach the test binary"
+}
+log "tests ran and were reported correctly"
+
+# Both shards run with distinct indices, and one deliberately fails.
+# A suite must expand to those tests, not return a vacuous green result.
+log "running sharded test through an explicit test_suite"
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza --test_output=all //:sharded_suite) \
+  > "$RUN_DIR/test_shards.log" 2>&1
+SHARD_STATUS=$?
+set -e
+[ "$SHARD_STATUS" -eq 3 ] || die "expected test failure status 3 for shard 2, got $SHARD_STATUS"
+grep -q "sharded_test (shard 1/2).*PASSED" "$RUN_DIR/test_shards.log" ||
+  die "shard 1 did not pass"
+grep -q "sharded_test (shard 2/2).*FAILED" "$RUN_DIR/test_shards.log" ||
+  die "shard 2 did not fail"
+grep -q "shard=0/2" "$RUN_DIR/test_shards.log" || die "test did not run shard 0"
+grep -q "shard=1/2" "$RUN_DIR/test_shards.log" || die "test did not run shard 1"
+grep -q "name={NAME}" "$RUN_DIR/test_shards.log" || die "test did not read its runfile"
+grep -q "xml=test.xml" "$RUN_DIR/test_shards.log" || die "test did not receive XML_OUTPUT_FILE"
+grep -q "passing_test.*PASSED" "$RUN_DIR/test_shards.log" ||
+  die "test_suite did not expand its unsharded member"
+
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza //empty_suite:all_tests) \
+  > "$RUN_DIR/test_empty_suite.log" 2>&1
+EMPTY_SUITE_STATUS=$?
+set -e
+[ "$EMPTY_SUITE_STATUS" -eq 3 ] ||
+  die "empty test_suite did not run its package's failing test (status $EMPTY_SUITE_STATUS)"
+grep -q "package_passing_test.*PASSED" "$RUN_DIR/test_empty_suite.log" ||
+  die "empty test_suite did not discover the package's passing test"
+grep -q "package_failing_test.*FAILED" "$RUN_DIR/test_empty_suite.log" ||
+  die "empty test_suite did not discover the package's failing test"
+
+# Declared sharding without an opt-in status file cannot be treated as a pass.
+set +e
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza //:missing_shard_status_test) \
+  > "$RUN_DIR/test_missing_shard_status.log" 2>&1
+MISSING_SHARD_STATUS=$?
+set -e
+[ "$MISSING_SHARD_STATUS" -ne 0 ] || die "test without shard status reported green"
+grep -q "did not write TEST_SHARD_STATUS_FILE" "$RUN_DIR/test_missing_shard_status.log" ||
+  die "missing shard status was not diagnosed"
+
+for target in unsupported_local_test unschedulable_test; do
+  set +e
+  (cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" test --config=bonanza "//:$target") \
+    > "$RUN_DIR/test_$target.log" 2>&1
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || die "test $target incorrectly reported green"
+done
+grep -q 'requires "local" execution' "$RUN_DIR/test_unsupported_local_test.log" ||
+  die "unsupported local test did not fail closed"
+grep -q "execution platform" "$RUN_DIR/test_unschedulable_test.log" ||
+  die "unschedulable test did not identify its execution platform"
+
+# --- run a target -------------------------------------------------------
+# "bonanza_bazel run" materializes the executable together with its
+# runfiles directory and launches it. The script that is launched
+# reports its arguments, its working directory, and the environment
+# variables that Bazel exposes to executables, and reads one of its
+# runfiles.
+log "running //:runnable with bonanza_bazel"
+(cd "$PROJECT" && HOME="$RUN_DIR" "$CLIENT" run --config=bonanza //:runnable -- one two \
+  > "$RUN_DIR/run_stdout.log" 2> "$RUN_DIR/run_stderr.log") || {
+  cat "$RUN_DIR/run_stderr.log" >&2
+  die "bonanza_bazel run failed"
+}
+cat "$RUN_DIR/run_stderr.log" >&2
+cat "$RUN_DIR/run_stdout.log" >&2
+verify_run() { # expected substring
+  grep -qF "$1" "$RUN_DIR/run_stdout.log" ||
+    die "output of the launched executable does not contain $1"
+}
+verify_run "run: args=one two"
+verify_run "run: cwd=_main"
+verify_run "run: runfiles=runnable.runfiles"
+verify_run "run: data=present"
+grep -qF "run: workspace=$(basename "$PROJECT")" "$RUN_DIR/run_stdout.log" ||
+  die "BUILD_WORKSPACE_DIRECTORY was not passed to the launched executable"
+log "//:runnable ran with its runfiles in place"
 
 log "building //:all with bonanza_bazel (warm; should be served from the evaluation cache)"
 t0=$(date +%s)

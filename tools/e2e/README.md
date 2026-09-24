@@ -12,7 +12,13 @@ The test project is self-verifying: its `:verify` genrule runs on the
 worker and greps the artifacts produced by the other targets, so a
 successful build proves that analysis, remote action execution (via the
 worker's virtual file system and bb_runner), and the resulting artifact
-contents are all correct. Among other things it exercises
+contents are all correct. After the build, the script checks the output
+files that `bonanza_bazel` materialized below `bonanza-out/` in the test
+project, covering artifact output as well. It then runs the project's
+test targets through `bonanza_bazel test`: one that passes, one that
+fails (which has to be reported as a result and yield exit status 3
+rather than a build failure), and one that only passes when
+`--test_filter` reaches the test binary as `TESTBRIDGE_TEST_ONLY`. Among other things it exercises
 `attr.int_list()`, `native.repo_name()`, `native.repository_name()`,
 `native.module_name()`, `native.module_version()`,
 `native.package_name()`, and `Label.workspace_name`. It also loads
@@ -24,6 +30,17 @@ the evaluation cache.
 
 Notes:
 
+- `bonanza_worker` exposes its build directory through a virtual file
+  system, so the host has to permit mounting one. On Linux that means
+  `/dev/fuse` must be present and openable; containers that do not grant
+  access to it fail with `fusermount3: failed to open /dev/fuse:
+  Operation not permitted` and the worker exits. Analysis-only targets
+  (source files, `ctx.actions.symlink()` outputs) still build without a
+  worker, but anything that runs a command does not. `//:runnable` is
+  deliberately built with `ctx.actions.symlink()`, so `bonanza_bazel run`
+  can be exercised on such hosts by pointing `--platforms` at
+  `//platforms:exec`, which avoids `@platforms//host` whose repo rule
+  needs a worker.
 - The demo deployment binds fixed TCP diagnostics ports (9980-9984), so
   only one cluster can run on a host at a time.
 - Module dependencies of the test project are provided as local

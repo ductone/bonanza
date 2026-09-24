@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -28,7 +27,6 @@ import (
 	"github.com/buildbarn/bb-remote-execution/pkg/filesystem/pool"
 	"github.com/buildbarn/bb-storage/pkg/clock"
 	"github.com/buildbarn/bb-storage/pkg/global"
-	http_client "github.com/buildbarn/bb-storage/pkg/http/client"
 	"github.com/buildbarn/bb-storage/pkg/program"
 	"github.com/buildbarn/bb-storage/pkg/random"
 	"github.com/buildbarn/bb-storage/pkg/util"
@@ -107,15 +105,19 @@ func main() {
 			return err
 		}
 
-		// Create fetchers for individual protocol schemes
-		// supported by this implementation.
+		// In repository mode, all HTTP(S) fetches go to the credential-free
+		// proxy. There is no direct-network fallback on missing dependencies.
 		fetchersByScheme := map[string]model_fetch.Fetcher{}
-		if configuration.HttpClient != nil {
-			roundTripper, err := http_client.NewRoundTripperFromConfiguration(configuration.HttpClient)
-			if err != nil {
-				return util.StatusWrap(err, "Failed to create HTTP client")
-			}
-			httpFetcher := model_fetch.NewHTTPFetcher(&http.Client{Transport: roundTripper})
+		httpFetcher, err := configuredRepositoryFetcher(
+			configuration.HttpClient,
+			os.Getenv("BONANZA_REPOSITORY_FETCH_PROXY_URL"),
+			os.Getenv("BONANZA_REPOSITORY_FETCH_ENVIRONMENT"),
+			os.Getenv("BONANZA_REPOSITORY_FETCH_REPOSITORY"),
+		)
+		if err != nil {
+			return err
+		}
+		if httpFetcher != nil {
 			fetchersByScheme["http"] = httpFetcher
 			fetchersByScheme["https"] = httpFetcher
 		}

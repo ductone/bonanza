@@ -47,6 +47,19 @@ func (l *consoleLogger) Fatal(message formatted.Node) {
 	os.Exit(1)
 }
 
+func (l *consoleLogger) Warning(message formatted.Node) {
+	var b bytes.Buffer
+	l.writeFormatted(
+		formatted.Join(
+			formatted.Bold(formatted.Yellow(formatted.Text("WARNING: "))),
+			message,
+			formatted.Text("\n"),
+		),
+		&b,
+	)
+	l.w.Write(b.Bytes())
+}
+
 func (l *consoleLogger) Info(message formatted.Node) {
 	var b bytes.Buffer
 	l.writeFormatted(

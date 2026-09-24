@@ -3999,41 +3999,74 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 		return PatchedRepoValue[TMetadata]{}, fmt.Errorf("invalid canonical repo: %w", err)
 	}
 
-	if _, _, ok := canonicalRepo.GetModuleExtension(); ok {
-		return c.fetchModuleExtensionRepo(ctx, canonicalRepo, canonicalRepo.GetModuleInstance().GetModule().ToApparentRepo(), e)
+	buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
+	if !buildSpecification.IsSet() {
+		return PatchedRepoValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
 	moduleInstance := canonicalRepo.GetModuleInstance()
-	if _, ok := moduleInstance.GetModuleVersion(); ok {
-		// TODO: Check for multiple version overrides.
-	} else {
-		// See if this is one of the modules for which sources
-		// are provided. If so, return a repo value immediately.
-		// This allows any files contained within to be accessed
-		// without processing MODULE.bazel. This prevents cyclic
-		// dependencies.
-		buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
-		if !buildSpecification.IsSet() {
-			return PatchedRepoValue[TMetadata]{}, evaluation.ErrMissingDependency
-		}
+	moduleName := moduleInstance.GetModule().String()
+	_, hasModuleVersion := moduleInstance.GetModuleVersion()
+	_, _, isModuleExtensionRepo := canonicalRepo.GetModuleExtension()
 
-		// Check to see if the client overrode this module manually.
-		moduleName := moduleInstance.GetModule().String()
+	vendoredRepos := buildSpecification.Message.VendoredRepos
+	vendoredIndex, hasVendoredRepo := sort.Find(
+		len(vendoredRepos),
+		func(index int) int {
+			return strings.Compare(canonicalRepo.String(), vendoredRepos[index].CanonicalRepo)
+		},
+	)
+
+	// A pin acts like an explicit repository override. Otherwise, locally
+	// supplied module sources take priority over the vendor snapshot; their
+	// generated repositories must be evaluated from the local module.
+	locallyProvidedModule := false
+	if !hasModuleVersion && (!hasVendoredRepo || !vendoredRepos[vendoredIndex].Pinned) {
 		modules := buildSpecification.Message.Modules
-		if i, ok := sort.Find(
+		if index, found := sort.Find(
 			len(modules),
-			func(i int) int { return strings.Compare(moduleName, modules[i].Name) },
-		); ok {
-			// Found matching module.
-			rootDirectoryReference := model_core.Patch(e, model_core.Nested(buildSpecification, modules[i].RootDirectoryReference))
-			return model_core.NewPatchedMessage(
-				&model_analysis_pb.Repo_Value{
-					RootDirectoryReference: rootDirectoryReference.Message,
-				},
-				rootDirectoryReference.Patcher,
-			), nil
+			func(index int) int {
+				return strings.Compare(moduleName, modules[index].Name)
+			},
+		); found {
+			if !isModuleExtensionRepo {
+				rootDirectoryReference := model_core.Patch(e, model_core.Nested(buildSpecification, modules[index].RootDirectoryReference))
+				return model_core.NewPatchedMessage(
+					&model_analysis_pb.Repo_Value{
+						RootDirectoryReference: rootDirectoryReference.Message,
+					},
+					rootDirectoryReference.Patcher,
+				), nil
+			}
+			locallyProvidedModule = true
 		}
+	}
 
+	if hasVendoredRepo && !locallyProvidedModule {
+		rootDirectoryReference := model_core.Patch(e, model_core.Nested(buildSpecification, vendoredRepos[vendoredIndex].RootDirectoryReference))
+		return model_core.NewPatchedMessage(
+			&model_analysis_pb.Repo_Value{
+				RootDirectoryReference: rootDirectoryReference.Message,
+			},
+			rootDirectoryReference.Patcher,
+		), nil
+	}
+
+	// A local MODULE.bazel may declare use_repo_rule() or use_extension()
+	// repositories. It is not an exemption from strict offline vendoring:
+	// evaluating one of those rules could still fetch from the network.
+	if buildSpecification.Message.StrictVendorMode {
+		if locallyProvidedModule {
+			return PatchedRepoValue[TMetadata]{}, fmt.Errorf("repository %q belongs to a local module; strict vendor mode cannot use a stale vendor snapshot or evaluate its extension", "@@"+canonicalRepo.String())
+		}
+		return PatchedRepoValue[TMetadata]{}, fmt.Errorf("repository %q is not present in the validated vendor snapshot", "@@"+canonicalRepo.String())
+	}
+
+	if isModuleExtensionRepo {
+		return c.fetchModuleExtensionRepo(ctx, canonicalRepo, moduleInstance.GetModule().ToApparentRepo(), e)
+	}
+
+	if !hasModuleVersion {
 		// Check to see if there is a MODULE.bazel override for this module.
 		var singleVersionOverridePatchLabels, singleVersionOverridePatchCommands []string
 		var singleVersionOverridePatchStrip int
@@ -4042,18 +4075,20 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 			return PatchedRepoValue[TMetadata]{}, evaluation.ErrMissingDependency
 		}
 		remoteOverrides := remoteOverridesValue.Message.ModuleOverrides
-		if i := sort.Search(
+		if index := sort.Search(
 			len(remoteOverrides),
-			func(i int) bool { return remoteOverrides[i].Name >= moduleName },
-		); i < len(remoteOverrides) && remoteOverrides[i].Name == moduleName {
-			// Found the remote override
-			remoteOverride := remoteOverrides[i]
+			func(index int) bool {
+				return remoteOverrides[index].Name >= moduleName
+			},
+		); index < len(remoteOverrides) && remoteOverrides[index].Name == moduleName {
+			// Found the remote override.
+			remoteOverride := remoteOverrides[index]
 			switch override := remoteOverride.Kind.(type) {
 			case *model_analysis_pb.ModuleOverride_RepositoryRule:
 				return c.fetchRepo(
 					ctx,
 					canonicalRepo,
-					canonicalRepo.GetModuleInstance().GetModule().ToApparentRepo(),
+					moduleInstance.GetModule().ToApparentRepo(),
 					model_core.Nested(remoteOverridesValue, override.RepositoryRule),
 					e,
 				)
@@ -4072,21 +4107,22 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 			}
 		}
 
-		// If a version of the module is selected as
-		// part of the final build list, we can download
-		// that exact version.
+		// If a version of the module is selected as part of the final build
+		// list, download that exact version.
 		buildListValue := e.GetModuleFinalBuildListValue(&model_analysis_pb.ModuleFinalBuildList_Key{})
 		if !buildListValue.IsSet() {
 			return PatchedRepoValue[TMetadata]{}, evaluation.ErrMissingDependency
 		}
 		buildList := buildListValue.Message.BuildList
-		if i, ok := sort.Find(
+		if index, found := sort.Find(
 			len(buildList),
-			func(i int) int { return strings.Compare(moduleName, buildList[i].Name) },
-		); ok {
+			func(index int) int {
+				return strings.Compare(moduleName, buildList[index].Name)
+			},
+		); found {
 			return c.fetchModuleFromRegistry(
 				ctx,
-				buildList[i],
+				buildList[index],
 				e,
 				singleVersionOverridePatchLabels,
 				singleVersionOverridePatchCommands,

@@ -8,8 +8,14 @@ import (
 
 	"bonanza.build/pkg/bazelclient/arguments"
 	commands_build "bonanza.build/pkg/bazelclient/commands/build"
+	commands_clean "bonanza.build/pkg/bazelclient/commands/clean"
+	commands_cquery "bonanza.build/pkg/bazelclient/commands/cquery"
+	commands_help "bonanza.build/pkg/bazelclient/commands/help"
 	commands_info "bonanza.build/pkg/bazelclient/commands/info"
 	commands_license "bonanza.build/pkg/bazelclient/commands/license"
+	commands_query "bonanza.build/pkg/bazelclient/commands/query"
+	commands_run "bonanza.build/pkg/bazelclient/commands/run"
+	commands_test "bonanza.build/pkg/bazelclient/commands/test"
 	commands_version "bonanza.build/pkg/bazelclient/commands/version"
 	"bonanza.build/pkg/bazelclient/formatted"
 	"bonanza.build/pkg/bazelclient/logging"
@@ -70,12 +76,22 @@ func main() {
 	switch typedCmd := cmd.(type) {
 	case *arguments.BuildCommand:
 		commands_build.DoBuild(typedCmd, workspacePath)
+	case *arguments.CleanCommand:
+		commands_clean.DoClean(typedCmd)
+	case *arguments.CqueryCommand:
+		commands_cquery.DoCquery(typedCmd, workspacePath)
 	case *arguments.HelpCommand:
-		panic("HELP")
+		commands_help.DoHelp(typedCmd)
 	case *arguments.InfoCommand:
 		commands_info.DoInfo(typedCmd, workspacePath)
 	case *arguments.LicenseCommand:
 		commands_license.DoLicense()
+	case *arguments.QueryCommand:
+		commands_query.DoQuery(typedCmd, workspacePath)
+	case *arguments.TestCommand:
+		commands_test.DoTest(typedCmd, workspacePath)
+	case *arguments.RunCommand:
+		commands_run.DoRun(typedCmd, workspacePath)
 	case *arguments.VersionCommand:
 		commands_version.DoVersion(typedCmd)
 	default:

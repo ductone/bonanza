@@ -103,19 +103,132 @@ measured at scale. `tools/e2e/run.sh` performs a cold build followed by
 a warm one and reports the elapsed time of each; it does not assert a
 hit rate.
 
-What Bonanza still cannot do is give you your build outputs.
-`bonanza_bazel build` verifies that a build succeeds and prints a link
-into `bonanza_browser`; `BuildResult.Value` carries no output set, and
-the client has no artifact materialization. The client implements
-`build`, `info`, `license` and `version`. There is no `test`, `run`,
-`query` or `cquery` command, and no Build Event Protocol.
+`bonanza_bazel build` materializes outputs beneath `bonanza-out`, and
+`bonanza_bazel test`, `run`, and loading-phase `query` are supported.
+`cquery --output=files` analyzes configured `DefaultInfo.files` without
+executing target actions. It prints root-module source paths relative to the
+workspace (for example, `bazel/python/check.py`) and generated output paths
+under the absolute `bonanza-out/bazel-out/...` tree; build those targets first
+to materialize their files. External source files without a local materialized
+path fail instead of printing a path that does not exist. Target selection
+supports patterns, `set()`, set operations, `kind()`, and `filter()`; configured
+dependency walks and `attr()` are rejected rather than using loading-phase
+results. Build and test accept `--target_pattern_file`.
+
+`--action_env=NAME[=VALUE]` and `--repo_env=NAME[=VALUE]` capture explicit
+values or the current client value (missing names unset an inherited value);
+later occurrences win. Action overrides are merged beneath explicit action
+environment variables, while repository overrides replace the registered
+repository platform environment. `--announce_rc` reports applied rc and
+`--config` options with environment values redacted. Unsupported rc startup
+options, including Bazel's server-only `--max_idle_secs`, fail explicitly.
+Bonanza is not yet a drop-in replacement for C1's unmodified `.bazelrc` or
+its Buildbarn endpoint.
+
+Build and test accept `--output_groups` to materialize named
+`OutputGroupInfo` depsets (for example `mtree` or `tarball`) instead of,
+or alongside, default outputs. `run` accepts only
+`--output_groups=default`, since its executable must be materialized.
+`--stamp`/`--nostamp` set the native Starlark stamp option;
+`--embed_label` contributes a stable label to `ctx.info_file`. Stamped
+actions receive status files containing the build label, hostname,
+username, timestamp, and formatted date. Unstamped builds use empty
+status inputs so they do not invalidate the remote analysis graph on
+each invocation. This does not implement custom
+`--workspace_status_command` values or prove Go module metadata, OCI
+image digest/tag parity, or frontend publication against C1 targets.
+
+`--vendor_dir` uploads Bazel's full canonical repository names and
+lockfile-verified registry metadata. It requires `--lockfile_mode=error`;
+repos absent from the snapshot use their normal repository rules, as in
+Bazel. `--strict_vendor` instead rejects missing repositories, including
+`use_repo_rule()` and module-extension repos declared by local modules;
+locally supplied bare module sources remain available unless explicitly
+`pin()`ned in `VENDOR.bazel`. A pin overrides local module sources for
+that canonical repo; `ignore()` removes it from the snapshot, so strict
+mode rejects its use instead of fetching it. Vendored generated repos
+resolve sibling aliases directly from the snapshot without running the
+producing extension. Source uploads exclude ignored local state and can
+require Git filtering before upload.
+
+Client-side `flag_alias` declarations in the root or vendored
+`MODULE.bazel` resolve named build-setting flags for build, test, run,
+and cquery. Alias targets using apparent repository names need a
+canonical label instead.
+
+An explicit `bonanza_worker.reapi_runners` backend sends fixed-output
+Bonanza commands to a Buildbarn REv2 Execute/CAS endpoint. It does not
+need FUSE and only selects the `c1.queue=small` or `link` platform.
+Stateful repository-rule actions requiring writable inputs or stable
+input-root paths fail closed on both the REAPI backend and the generic
+native worker. Neither is an isolated repository-action worker. A
+dedicated worker with a writable virtual tree, bounded CPU/memory,
+separate UID/filesystem and proxy-only network policy still requires an
+operator-issued identity, an isolated runner and security review.
+Native-worker FUSE is a deployment concern, not a `cquery` requirement.
+Bonanza still requires its own scheduler and object store, and has no
+Build Event Protocol.
+
+The fetcher has an optional credential-free proxy mode controlled by
+`BONANZA_REPOSITORY_FETCH_PROXY_URL` (HTTPS endpoint ending in
+`/v1/repository-fetch`), `BONANZA_REPOSITORY_FETCH_ENVIRONMENT`, and
+`BONANZA_REPOSITORY_FETCH_REPOSITORY` (GitHub `owner/repository`).
+Set all three together on a dedicated per-environment fetcher and configure
+`http_client.tls.client_key_pair` with an operator-issued worker certificate
+whose sole URI SAN is
+`spiffe://squire.ductone.com/bonanza/repository-worker/<environment>`.
+The fetcher requires verified action-certificate public metadata
+`environment_id` and `repository` to match its process configuration.
+It posts only `{ "url": "..." }` to the proxy, accepts only HTTPS GitHub
+paths beneath the configured repository, and rejects action headers,
+redirects, partial configuration and unavailable proxy connections. It
+never attaches Git credentials. The proxy must independently bind its mTLS
+worker identity to the environment/repository and return bytes without
+credentials; no such issuer/proxy or isolated repo runner is deployed yet.
+**Do not enable repository actions on the strength of this client alone.**
+
+The REAPI runner uses one connection and instance for execution, CAS, and
+ByteStream; readiness requires SHA-256 execution and CAS capabilities.
+Interrupted named operations resume through `WaitExecution` without resubmitting
+the action; cancellation requests `CancelOperation` when an operation name is
+known (servers may implement it only on a best-effort basis). The configured
+runner concurrency bounds simultaneous actions. Remote cache hits are imported
+like executed results, while remote failures are returned without a local
+fallback. In-memory Tree imports reject blobs over 64 MiB instead of allocating
+unbounded memory.
+
+`ctx.actions.run()` and `run_shell()` fail analysis when an action requires
+local, exclusive, unsandboxed, or uncached execution, whether specified as
+an execution requirement or a rule tag. `use_default_shell_env` is also
+rejected until host environment propagation is implemented. C1's
+source-tree image archiver, for example, requires a local unsandboxed
+action and cannot safely run on the current remote worker. Test-rule tags
+and `bazel run` targets have separate execution paths. No `rules_img`
+image digest or publication parity is claimed without an isolated Bonanza
+worker and a complete C1 graph canary.
+
+`test` builds the targets its patterns match, expands `test_suite` members
+(including an empty suite's package tests), and reports each test action.
+A failing test exits with Bazel's status 3; an unavailable execution
+platform or a test requiring unsupported local, exclusive, external,
+uncached, or unsandboxed execution fails the invocation rather than
+producing a passing test result. `--test_output` selects which captured
+logs to print, and `--test_filter` reaches test binaries as
+`TESTBRIDGE_TEST_ONLY`. Tests receive `RUNFILES_DIR`, `TEST_SRCDIR`, and
+`XML_OUTPUT_FILE=test.xml`; framework-written XML is captured with the
+test's output artifacts. Tests declaring `shard_count` run one action per
+shard with `TEST_SHARD_INDEX` and `TEST_TOTAL_SHARDS`. A successful shard
+must write `TEST_SHARD_STATUS_FILE`, or the test fails closed.
+`TestResult.Key.test_tag_filters` applies positive-OR and negative-AND
+tag selection before execution; the command-line flag is delivered
+separately. Test result caching remains the evaluation cache.
 
 ## Differences from upstream
 
 This fork tracks [buildbarn/bonanza](https://github.com/buildbarn/bonanza)
-and adds the following. All of it is loading- and analysis-phase work:
-none of it makes the client able to run a test, resolve a query or
-launch a binary, because those commands do not exist yet.
+and adds the following. Client output materialization, test execution,
+run, and query are supported; the command-line feature set remains
+smaller than Bazel's.
 
 **Aspects.** `aspect()` supports `attrs`, `toolchains`,
 `required_providers`, `required_aspect_providers`, `provides`,
@@ -125,14 +238,28 @@ providers are rejected. Aspects are applied to configured targets
 through a first-class analysis key, and toolchains declared on an
 aspect become its default exec group, mirroring how rules behave.
 
+**Test execution.** `bonanza_bazel test`, backed by a `TestResult`
+analysis function that expands the target patterns and a
+`TargetTestResult` that runs one test. A test is run as an action
+synthesized from the target's `DefaultInfo.files_to_run` -- its
+executable, with a runfiles directory populated beside it -- rather than
+as an action declared on the configured target: `target.actions` is
+exposed to aspects, so an action that exists only because someone ran
+`test` would change what every aspect observes about the target.
+`CompletedActionResult` exists for the same reason a test is not a build
+failure: unlike `SuccessfulActionResult` it reports a non-zero exit as a
+value, so the client can print which tests failed instead of the
+evaluation stopping at the first one.
+
 **Analysis-time testing.** `testing.analysis_test()`,
 `rule(analysis_test = True)`, `analysis_test_transition()` and
 `--allow_analysis_failures` work. Test rules receive the common test
 attributes (`size`, `timeout`, `flaky`, `local`, `shard_count`) and an
 implicit `"test"` exec group that inherits the default exec group's
-constraints. `test_suite()` builds the tests it references, but
-running them and expanding an empty `tests` attribute to every test in
-the package remain unimplemented.
+constraints. A test target's `exec_compatible_with` is combined with
+those group constraints for its test action. `test_suite()` expands
+explicit members and, for an empty `tests` attribute, tests in its
+package; unsupported local/exclusive execution is deliberately rejected.
 
 **Repository rule APIs.** `repository_ctx.getenv()`, `path.is_dir()`,
 `path.readdir()` and `path.realpath()` are implemented, the last of
@@ -153,6 +280,19 @@ by computing substitutions at analysis time, since the native action
 encoding path still lacks it, and `config_feature_flag` always
 resolves to its default value because Bonanza does not model feature
 flag configuration.
+
+**Tool runfiles.** Action input roots include the workspace-relative and
+root-relative entries of a tool's `FilesToRunProvider`, not just its
+runfiles files. JavaScript launchers can therefore read data placed at
+custom runfiles paths when invoked by another rule.
+
+**Action paths.** Main-workspace source files are rooted at the action
+execroot; outputs are rooted at `bazel-out/<configuration>/bin/<package>`,
+and main-workspace runfiles live under `_main/`. External repositories
+retain their `external/<canonical repository>` input/output prefix.
+Action commands receive `BAZEL_BINDIR` relative to the execroot, so
+rules that enter their output package directory can locate source
+files and generated dependencies using the same layout as Bazel.
 
 **Cache hardening.** Cache tag keys carry a semantics version, so
 workers implementing different evaluation semantics read and write

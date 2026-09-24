@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "clean",
+    srcs = ["do_clean.go"],
+    importpath = "bonanza.build/pkg/bazelclient/commands/clean",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/bazelclient/arguments",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+    ],
+)

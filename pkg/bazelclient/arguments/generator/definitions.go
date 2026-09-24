@@ -30,6 +30,16 @@ var enumTypes = map[string][]string{
 		"refresh",
 		"error",
 	},
+	"QueryOutput": {
+		"label",
+		"label_kind",
+		"files",
+	},
+	"TestOutput": {
+		"summary",
+		"errors",
+		"all",
+	},
 }
 
 var startupFlags = []flag{
@@ -69,6 +79,11 @@ var startupFlags = []flag{
 }
 
 var commonFlags = []flag{
+	{
+		longName:    "announce_rc",
+		description: "Print the rc options applied to this command, including expanded --config directives.",
+		flagType:    boolFlagType{},
+	},
 	{
 		longName:    "browser_url",
 		description: "URL at which the Bonanza Browser service is hosted. This causes command line output to contain clickable links to the Bonanza Browser service.",
@@ -175,15 +190,49 @@ var commonFlags = []flag{
 		flagType:    stringFlagType{},
 	},
 	{
+		longName:    "respect_gitignore",
+		description: "If true, files and directories that are ignored by Git (via .gitignore, .git/info/exclude, or the global excludes file) are excluded from the module source tree that gets uploaded to the remote cache, for any module whose root directory is itself the top level of a Git working tree. This has no effect on modules that aren't Git working trees, such as most vendored/extracted dependencies. Disable this if a module relies on a Git-ignored file also being a build input.",
+		flagType: boolFlagType{
+			defaultValue: true,
+		},
+	},
+	{
+		longName:    "require_gitignore",
+		description: "Fail before uploading any module source if the root module's Git ignore rules cannot be read. Use when the checkout contains ignored local credentials.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
 		longName:    "rule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of rule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
+	},
+	{
+		longName:    "strict_module_resolution",
+		description: "If true, never fall back to the default Bazel Central Registry when --registry is unset. A module not available through a local_path_override() or --override_module then fails resolution instead of being fetched.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
+		longName:    "strict_vendor",
+		description: "With --vendor_dir, reject any repository that is absent from the validated vendor snapshot instead of evaluating its normal repository rule.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
 	},
 	{
 		longName:    "subrule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of subrule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
 	},
+	{
+		longName:    "vendor_dir",
+		description: "Path to a Bazel vendor directory. Relative paths are resolved against the workspace root. Bonanza requires --lockfile_mode=error and validates marker files and MODULE.bazel.lock registry hashes. Repositories outside the snapshot use normal resolution unless --strict_vendor is set.",
+		flagType:    stringFlagType{},
+	},
+
 	{
 		longName:    "xcode_version",
 		description: "If specified, uses Xcode of the given version for relevant build actions. If unspecified, uses the executor default version of Xcode.",
@@ -195,6 +244,16 @@ var commands = map[string]command{
 	"build": {
 		ancestor: "common",
 		flags: []flag{
+			{
+				longName:    "action_env",
+				description: "Set an action's default shell environment variable. NAME copies the client value (or unsets it when absent); NAME=VALUE sets it explicitly. Repeated names use the last value.",
+				flagType:    stringListFlagType{},
+			},
+			{
+				longName:    "repo_env",
+				description: "Set a repository rule and module extension environment variable. NAME copies the client value (or unsets it when absent); NAME=VALUE sets it explicitly. Repeated names use the last value.",
+				flagType:    stringListFlagType{},
+			},
 			{
 				longName:    "keep_going",
 				shortName:   "k",
@@ -209,11 +268,57 @@ var commands = map[string]command{
 				flagType:    buildSettingFlagType{},
 			},
 			{
+				longName:    "output_groups",
+				description: "Select output groups to build. Named groups are provided by OutputGroupInfo; 'default' selects DefaultInfo.files.",
+				flagType: stringFlagType{
+					defaultValue: "default",
+				},
+			},
+			{
+				longName:    "output_path",
+				description: "Directory into which the output files of the targets that were built are written. When left empty, outputs are written to a directory named \"bonanza-out\" inside the workspace.",
+				flagType:    stringFlagType{},
+			},
+			{
 				longName:    "platforms",
 				description: "The labels of the platform rules describing the target platforms for the current command.",
 				flagType:    stringFlagType{},
 			},
+			{
+				longName:    "embed_label",
+				description: "Stable build label recorded in the workspace status file for stamped outputs.",
+				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "stamp",
+				description: "Include workspace status in actions that opt into stamping.",
+				flagType:    boolBuildSettingFlagType{},
+			},
+			{
+				longName:    "target_pattern_file",
+				description: "Read newline-separated target patterns from this file instead of the command line. Supplying both is an error.",
+				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "symlink_prefix",
+				description: "The prefix that is prepended to any of the convenience symbolic links that are created after a build. Setting it to \"/\" causes no symbolic links to be created.",
+				flagType: stringFlagType{
+					defaultValue: "bonanza-",
+				},
+			},
 		},
+		takesArguments: true,
+	},
+	"cquery": {
+		ancestor: "build",
+		flags: []flag{{
+			longName:    "output",
+			description: "Print configured target labels, rule kinds and labels, or default output file paths.",
+			flagType: enumFlagType{
+				enumType:     "QueryOutput",
+				defaultValue: "label",
+			},
+		}},
 		takesArguments: true,
 	},
 	"clean": {
@@ -266,6 +371,20 @@ var commands = map[string]command{
 	"license": {
 		ancestor: "common",
 	},
+	"query": {
+		ancestor: "common",
+		flags: []flag{
+			{
+				longName:    "output",
+				description: "The format in which the query results should be printed. Supported values are 'label' (print the label of each matched target) and 'label_kind' (print the rule kind together with the label, following Bazel's own \"kind rule label\" convention).",
+				flagType: enumFlagType{
+					enumType:     "QueryOutput",
+					defaultValue: "label",
+				},
+			},
+		},
+		takesArguments: true,
+	},
 	"run": {
 		ancestor: "build",
 		flags: []flag{
@@ -273,6 +392,25 @@ var commands = map[string]command{
 				longName:    "run_under",
 				description: "Prefix to insert before the executables for the 'test' and 'run' commands. If the value is 'foo -bar', and the execution command line is 'test_binary -baz', then the final command line is 'foo -bar test_binary -baz'.This can also be a label to an executable target. Some examples are: 'valgrind', 'strace', 'strace -c', 'valgrind --quiet --num-callers=20', '//package:target', '//package:target --options'.",
 				flagType:    stringFlagType{},
+			},
+		},
+		takesArguments: true,
+	},
+	"test": {
+		ancestor: "build",
+		flags: []flag{
+			{
+				longName:    "test_filter",
+				description: "Specifies a filter to forward to the test framework. Used to limit the tests run. Note that this does not affect which targets are built.",
+				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "test_output",
+				description: "Specifies desired output mode. Valid values are 'summary' to output only test status summary, 'errors' to also print test logs for failed tests, or 'all' to print logs for all tests.",
+				flagType: enumFlagType{
+					enumType:     "TestOutput",
+					defaultValue: "summary",
+				},
 			},
 		},
 		takesArguments: true,

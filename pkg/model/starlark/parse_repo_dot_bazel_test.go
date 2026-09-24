@@ -30,7 +30,7 @@ func TestParseModuleDotBazel(t *testing.T) {
 		// message value we provide.
 		labelResolver := NewMockLabelResolver(ctrl)
 
-		defaultAttrs, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+		defaultAttrs, _, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
 			ctx,
 			"",
 			util.Must(label.NewCanonicalLabel("@@foo+//:REPO.bazel")),
@@ -52,7 +52,7 @@ func TestParseModuleDotBazel(t *testing.T) {
 		// should also be equal to the default.
 		labelResolver := NewMockLabelResolver(ctrl)
 
-		defaultAttrs, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+		defaultAttrs, _, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
 			ctx,
 			"repo()",
 			util.Must(label.NewCanonicalLabel("@@foo+//:REPO.bazel")),
@@ -72,7 +72,7 @@ func TestParseModuleDotBazel(t *testing.T) {
 		// Calling repo() times is not permitted.
 		labelResolver := NewMockLabelResolver(ctrl)
 
-		_, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+		_, _, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
 			ctx,
 			"repo()\nrepo()",
 			util.Must(label.NewCanonicalLabel("@@foo+//:REPO.bazel")),
@@ -93,7 +93,7 @@ func TestParseModuleDotBazel(t *testing.T) {
 		// provide both arguments at once.
 		labelResolver := NewMockLabelResolver(ctrl)
 
-		_, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+		_, _, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
 			ctx,
 			`repo(
 				default_applicable_licenses = ["//:license"],
@@ -118,7 +118,7 @@ func TestParseModuleDotBazel(t *testing.T) {
 		objectManager.EXPECT().CaptureCreatedObject(gomock.Any(), gomock.Any()).AnyTimes()
 		labelResolver := NewMockLabelResolver(ctrl)
 
-		defaultAttrs, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+		defaultAttrs, _, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
 			ctx,
 			`repo(
 				default_deprecation = "All code in this repository is deprecated.",
@@ -172,5 +172,22 @@ func TestParseModuleDotBazel(t *testing.T) {
 				"@@foo+//somepackage:__pkg__",
 			},
 		}, defaultAttrs.Message)
+	})
+	t.Run("IgnoredDirectories", func(t *testing.T) {
+		labelResolver := NewMockLabelResolver(ctrl)
+		_, ignored, err := model_starlark.ParseRepoDotBazel[object.LocalReference](
+			ctx,
+			`ignore_directories([".git", "**/node_modules", "local_vendor/**/vendor"])`,
+			util.Must(label.NewCanonicalLabel("@@foo+//:REPO.bazel")),
+			encoder,
+			&inlinedtree.Options{
+				ReferenceFormat:  util.Must(object.NewReferenceFormat(object_pb.ReferenceFormat_SHA256_V1)),
+				MaximumSizeBytes: 0,
+			},
+			model_core.ObjectManager[object.LocalReference, model_core.ReferenceMetadata](nil),
+			labelResolver,
+		)
+		require.NoError(t, err)
+		require.Equal(t, []string{".git", "**/node_modules", "local_vendor/**/vendor"}, ignored)
 	})
 }
