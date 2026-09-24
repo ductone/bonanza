@@ -125,10 +125,33 @@ canonical label instead.
 An explicit `bonanza_worker.reapi_runners` backend sends fixed-output
 Bonanza commands to a Buildbarn REv2 Execute/CAS endpoint. It does not
 need FUSE and only selects the `c1.queue=small` or `link` platform.
-Stateful repository-rule actions requiring writable inputs and stable
-input-root paths are not supported by this backend; use a native
-Bonanza worker for those actions. Bonanza still requires its own
-scheduler and object store, and has no Build Event Protocol.
+Stateful repository-rule actions requiring writable inputs or stable
+input-root paths fail closed on both the REAPI backend and the generic
+native worker. Neither is an isolated repository-action worker. A
+dedicated worker with a writable virtual tree, bounded CPU/memory,
+separate UID/filesystem and proxy-only network policy still requires an
+operator-issued identity, an isolated runner and security review.
+Native-worker FUSE is a deployment concern, not a `cquery` requirement.
+Bonanza still requires its own scheduler and object store, and has no
+Build Event Protocol.
+
+The fetcher has an optional credential-free proxy mode controlled by
+`BONANZA_REPOSITORY_FETCH_PROXY_URL` (HTTPS endpoint ending in
+`/v1/repository-fetch`), `BONANZA_REPOSITORY_FETCH_ENVIRONMENT`, and
+`BONANZA_REPOSITORY_FETCH_REPOSITORY` (GitHub `owner/repository`).
+Set all three together on a dedicated per-environment fetcher and configure
+`http_client.tls.client_key_pair` with an operator-issued worker certificate
+whose sole URI SAN is
+`spiffe://squire.ductone.com/bonanza/repository-worker/<environment>`.
+The fetcher requires verified action-certificate public metadata
+`environment_id` and `repository` to match its process configuration.
+It posts only `{ "url": "..." }` to the proxy, accepts only HTTPS GitHub
+paths beneath the configured repository, and rejects action headers,
+redirects, partial configuration and unavailable proxy connections. It
+never attaches Git credentials. The proxy must independently bind its mTLS
+worker identity to the environment/repository and return bytes without
+credentials; no such issuer/proxy or isolated repo runner is deployed yet.
+**Do not enable repository actions on the strength of this client alone.**
 
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test
