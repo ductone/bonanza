@@ -826,12 +826,24 @@ func PerformBuild(
 		targetPatterns = append(targetPatterns, apparentTargetPattern.String())
 	}
 
+	flagAliases := map[string]string{}
+	if vendorDirectory != nil {
+		maps.Copy(flagAliases, vendorDirectory.FlagAliases)
+	}
+	if err := scanModuleFlagAliases(flagAliases, workspacePathStr, rootModuleName.ToModuleInstance(nil).GetBareCanonicalRepo()); err != nil {
+		logger.Fatal(formatted.Textf("Failed to load root module flag aliases: %s", err))
+	}
+	resolvedBuildSettingOverrides, err := ResolveFlagAliases(buildSettingOverrides, flagAliases)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve build flags: %s", err))
+	}
+
 	// Determine the configurations for which to build. The Bazel
 	// CLI only supports specifying build setting overrides and a
 	// single list of platforms. However, there is no way to pick
 	// different build setting overrides depending on the platform.
-	commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(buildSettingOverrides))
-	for _, override := range buildSettingOverrides {
+	commonBuildSettingOverrides := make([]*model_analysis_pb.BuildResult_Key_BuildSettingOverride, 0, len(resolvedBuildSettingOverrides))
+	for _, override := range resolvedBuildSettingOverrides {
 		apparentLabel, err := currentPackage.AppendTargetPattern(override.Label)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid build setting override --%s=%#v: %s", override.Label, override.Value, err))

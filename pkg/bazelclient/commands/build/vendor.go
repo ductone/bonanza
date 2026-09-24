@@ -55,6 +55,7 @@ type VendorDirectory struct {
 	RootRelativePath string
 	Repos            []VendoredRepo
 	Registries       []VendoredRegistry
+	FlagAliases      map[string]string
 }
 
 type vendorConfiguration struct {
@@ -145,12 +146,17 @@ func ScanVendorDirectory(workspacePath path.Parser, vendorDir string, registryUR
 	for _, repoName := range repoNames {
 		repos = append(repos, reposByName[repoName].repo)
 	}
+	aliases, err := scanVendoredFlagAliases(repos)
+	if err != nil {
+		return nil, err
+	}
 
 	return &VendorDirectory{
 		RootPath:         vendorPath,
 		RootRelativePath: rootRelativePath,
 		Repos:            repos,
 		Registries:       registries,
+		FlagAliases:      aliases,
 	}, nil
 }
 

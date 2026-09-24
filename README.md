@@ -117,6 +117,11 @@ repos absent from the snapshot use their normal repository rules, as in
 Bazel. `--strict_vendor` instead rejects missing repos. Source uploads
 exclude ignored local state and can require Git filtering before upload.
 
+Client-side `flag_alias` declarations in the root or vendored
+`MODULE.bazel` resolve named build-setting flags for build, test, run,
+and cquery. Alias targets using apparent repository names need a
+canonical label instead.
+
 An explicit `bonanza_worker.reapi_runners` backend sends fixed-output
 Bonanza commands to a Buildbarn REv2 Execute/CAS endpoint. It does not
 need FUSE and only selects the `c1.queue=small` or `link` platform.

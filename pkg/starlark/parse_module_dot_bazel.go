@@ -40,6 +40,12 @@ var NullModuleExtensionProxy ModuleExtensionProxy = nullModuleExtensionProxy{}
 // repository rule is invoked.
 type RepoRuleProxy func(name label.ApparentRepo, devDependency bool, attrs map[string]starlark.Value) error
 
+// FlagAliasHandler consumes client-side aliases declared by MODULE.bazel.
+// Analysis handlers omit it because build setting labels are resolved by the client.
+type FlagAliasHandler interface {
+	FlagAlias(name string, starlarkFlag label.ApparentLabel) error
+}
+
 // PatchOptions contains the common set of properties that are accepted
 // by MODULE.bazel's archive_override(), git_override() and
 // single_version_override().
@@ -222,6 +228,27 @@ func ParseModuleDotBazel(contents string, filename label.CanonicalLabel, localPa
 					*repoName,
 					devDependency,
 				)
+			}),
+			"flag_alias": starlark.NewBuiltin("flag_alias", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+				var name, flag string
+				if err := starlark.UnpackArgs(
+					b.Name(), args, kwargs,
+					"name", unpack.Bind(thread, &name, unpack.String),
+					"starlark_flag", unpack.Bind(thread, &flag, unpack.String),
+				); err != nil {
+					return nil, err
+				}
+				if name == "" {
+					return nil, fmt.Errorf("%s: name must not be empty", b.Name())
+				}
+				starlarkFlag, err := filename.GetCanonicalPackage().AppendLabel(flag)
+				if err != nil {
+					return nil, fmt.Errorf("%s: invalid Starlark flag %q: %w", b.Name(), flag, err)
+				}
+				if aliasHandler, ok := handler.(FlagAliasHandler); ok {
+					return starlark.None, aliasHandler.FlagAlias(name, starlarkFlag)
+				}
+				return starlark.None, nil
 			}),
 			"git_override": starlark.NewBuiltin("git_override", repositoryRuleOverrideFunc(targetIdentifierGitRepository)),
 			"include": starlark.NewBuiltin("include", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {

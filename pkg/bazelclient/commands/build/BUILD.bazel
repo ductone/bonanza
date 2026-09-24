@@ -4,6 +4,7 @@ go_library(
     name = "build",
     srcs = [
         "do_build.go",
+        "flag_aliases.go",
         "local_path_extracting_module_dot_bazel_handler.go",
         "materialize_output_root.go",
         "path_utils.go",
@@ -69,6 +70,7 @@ go_library(
 go_test(
     name = "build_test",
     srcs = [
+        "flag_aliases_test.go",
         "materialize_output_root_test.go",
         "source_exclusions_test.go",
         "target_pattern_file_test.go",
@@ -76,8 +78,10 @@ go_test(
     ],
     embed = [":build"],
     deps = [
+        "//pkg/bazelclient/arguments",
         "//pkg/bazelclient/formatted",
         "//pkg/bazelclient/logging",
+        "//pkg/label",
         "//pkg/model/core",
         "//pkg/proto/model/filesystem",
         "//pkg/storage/object",
