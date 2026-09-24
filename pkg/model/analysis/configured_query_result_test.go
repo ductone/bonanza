@@ -29,17 +29,23 @@ func TestConfiguredQueryRejectsLoadingPhaseDependencyWalks(t *testing.T) {
 }
 
 func TestConfiguredQueryClassifiesC1SourceAndBinary(t *testing.T) {
-	source := &model_starlark_pb.File{}
-	path, location := classifyConfiguredQueryFile("c1+", "external/c1+/bazel/python/check.py", source)
+	source := &model_starlark_pb.File{Label: "@@c1+//bazel/python:check.py"}
+	path, location := classifyConfiguredQueryFile("c1+", "bazel/python/check.py", source)
 	require.Equal(t, configuredQueryRootSource, location)
 	require.Equal(t, "bazel/python/check.py", path)
 
-	generated := &model_starlark_pb.File{Owner: &model_starlark_pb.File_Owner{}}
-	path, location = classifyConfiguredQueryFile("c1+", "bazel-out/config/bin/external/c1+/cmd/example/example", generated)
-	require.Equal(t, configuredQueryGenerated, location)
-	require.Equal(t, "bazel-out/config/bin/external/c1+/cmd/example/example", path)
+	// A root-module directory named external is still part of this workspace.
+	path, location = classifyConfiguredQueryFile("c1+", "external/tool.py", &model_starlark_pb.File{Label: "@@c1+//external:tool.py"})
+	require.Equal(t, configuredQueryRootSource, location)
+	require.Equal(t, "external/tool.py", path)
 
-	path, location = classifyConfiguredQueryFile("c1+", "external/rules_python+/tool.py", source)
+	generated := &model_starlark_pb.File{Owner: &model_starlark_pb.File_Owner{}}
+	path, location = classifyConfiguredQueryFile("c1+", "bazel-out/config/bin/cmd/example/example", generated)
+	require.Equal(t, configuredQueryGenerated, location)
+	require.Equal(t, "bazel-out/config/bin/cmd/example/example", path)
+
+	externalSource := &model_starlark_pb.File{Label: "@@rules_python+//:tool.py"}
+	path, location = classifyConfiguredQueryFile("c1+", "external/rules_python+/tool.py", externalSource)
 	require.Equal(t, configuredQueryExternalSource, location)
 	require.Equal(t, "external/rules_python+/tool.py", path)
 }

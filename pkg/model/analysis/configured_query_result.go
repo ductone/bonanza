@@ -53,8 +53,10 @@ func classifyConfiguredQueryFile(rootRepo, inputPath string, file *model_starlar
 	if file.Owner != nil {
 		return inputPath, configuredQueryGenerated
 	}
-	if source, ok := strings.CutPrefix(inputPath, "external/"+rootRepo+"/"); ok {
-		return source, configuredQueryRootSource
+	if canonicalLabel, ok := strings.CutPrefix(file.Label, "@@"); ok {
+		if repo, _, ok := strings.Cut(canonicalLabel, "//"); ok && repo == rootRepo {
+			return inputPath, configuredQueryRootSource
+		}
 	}
 	return inputPath, configuredQueryExternalSource
 }

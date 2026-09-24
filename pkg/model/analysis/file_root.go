@@ -546,6 +546,7 @@ func (baseComputer[TReference, TMetadata]) ComputeFileRootValue(ctx context.Cont
 			model_core.Nested(f, owner.ConfigurationReference),
 			fileLabel.GetCanonicalPackage(),
 			key.Message.DirectoryLayout,
+			rootModuleName,
 		)
 		if err != nil {
 			return PatchedFileRootValue[TMetadata]{}, err
