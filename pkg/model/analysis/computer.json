@@ -58,6 +58,7 @@
       },
       "CanonicalRepoName": {
          "dependsOn": [
+            "BuildSpecification",
             "ModuleExtensionRepoNames",
             "ModuleRepoMapping"
          ]

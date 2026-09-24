@@ -4009,12 +4009,19 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 	_, hasModuleVersion := moduleInstance.GetModuleVersion()
 	_, _, isModuleExtensionRepo := canonicalRepo.GetModuleExtension()
 
-	// --override_module and local_path_override() are higher priority than
-	// the vendor snapshot. For a bare module this is the repository itself;
-	// for a module-extension repo it means the extension must be evaluated
-	// from the locally supplied module rather than reusing a vendor result.
+	vendoredRepos := buildSpecification.Message.VendoredRepos
+	vendoredIndex, hasVendoredRepo := sort.Find(
+		len(vendoredRepos),
+		func(index int) int {
+			return strings.Compare(canonicalRepo.String(), vendoredRepos[index].CanonicalRepo)
+		},
+	)
+
+	// A pin acts like an explicit repository override. Otherwise, locally
+	// supplied module sources take priority over the vendor snapshot; their
+	// generated repositories must be evaluated from the local module.
 	locallyProvidedModule := false
-	if !hasModuleVersion {
+	if !hasModuleVersion && (!hasVendoredRepo || !vendoredRepos[vendoredIndex].Pinned) {
 		modules := buildSpecification.Message.Modules
 		if index, found := sort.Find(
 			len(modules),
@@ -4035,25 +4042,23 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoValue(ctx context.Conte
 		}
 	}
 
-	if !locallyProvidedModule {
-		vendoredRepos := buildSpecification.Message.VendoredRepos
-		if index, found := sort.Find(
-			len(vendoredRepos),
-			func(index int) int {
-				return strings.Compare(canonicalRepo.String(), vendoredRepos[index].CanonicalRepo)
+	if hasVendoredRepo && !locallyProvidedModule {
+		rootDirectoryReference := model_core.Patch(e, model_core.Nested(buildSpecification, vendoredRepos[vendoredIndex].RootDirectoryReference))
+		return model_core.NewPatchedMessage(
+			&model_analysis_pb.Repo_Value{
+				RootDirectoryReference: rootDirectoryReference.Message,
 			},
-		); found {
-			rootDirectoryReference := model_core.Patch(e, model_core.Nested(buildSpecification, vendoredRepos[index].RootDirectoryReference))
-			return model_core.NewPatchedMessage(
-				&model_analysis_pb.Repo_Value{
-					RootDirectoryReference: rootDirectoryReference.Message,
-				},
-				rootDirectoryReference.Patcher,
-			), nil
-		}
+			rootDirectoryReference.Patcher,
+		), nil
 	}
 
-	if buildSpecification.Message.StrictVendorMode && !locallyProvidedModule {
+	// A local MODULE.bazel may declare use_repo_rule() or use_extension()
+	// repositories. It is not an exemption from strict offline vendoring:
+	// evaluating one of those rules could still fetch from the network.
+	if buildSpecification.Message.StrictVendorMode {
+		if locallyProvidedModule {
+			return PatchedRepoValue[TMetadata]{}, fmt.Errorf("repository %q belongs to a local module; strict vendor mode cannot use a stale vendor snapshot or evaluate its extension", "@@"+canonicalRepo.String())
+		}
 		return PatchedRepoValue[TMetadata]{}, fmt.Errorf("repository %q is not present in the validated vendor snapshot", "@@"+canonicalRepo.String())
 	}
 

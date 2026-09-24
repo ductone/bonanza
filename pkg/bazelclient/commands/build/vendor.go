@@ -28,6 +28,7 @@ import (
 type VendoredRepo struct {
 	CanonicalRepo label.CanonicalRepo
 	RootPath      string
+	Pinned        bool
 }
 
 // VendoredRegistryFile is a registry file whose hash was checked against the
@@ -277,10 +278,12 @@ func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (ma
 			return nil, err
 		}
 		canonicalRepoName := canonicalRepo.String()
+		_, pinned := configuration.pinnedRepos[canonicalRepoName]
 		repos[canonicalRepoName] = vendorRepoRecord{
 			repo: VendoredRepo{
 				CanonicalRepo: canonicalRepo,
 				RootPath:      filepath.Join(vendorPath, canonicalRepoName),
+				Pinned:        pinned,
 			},
 			markerFiles: markerFiles,
 		}

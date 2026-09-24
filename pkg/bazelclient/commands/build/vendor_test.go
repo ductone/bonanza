@@ -62,6 +62,8 @@ func TestScanVendorDirectoryMapsCanonicalModuleAndExtensionRepos(t *testing.T) {
 		vendor.Repos[1].CanonicalRepo.String(),
 		vendor.Repos[2].CanonicalRepo.String(),
 	})
+	require.False(t, vendor.Repos[1].Pinned)
+	require.True(t, vendor.Repos[2].Pinned)
 	require.Len(t, vendor.Registries, 1)
 	require.Equal(t, "https://bcr.bazel.build/", vendor.Registries[0].URL)
 	require.Len(t, vendor.Registries[0].Files, 1)
@@ -109,6 +111,44 @@ func TestScanVendorDirectoryRejectsPinIgnoreConflict(t *testing.T) {
 
 	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
 	require.ErrorContains(t, err, "cannot be both pinned and ignored")
+}
+
+func TestScanVendorDirectoryRejectsStaleMarkerUnlessPinned(t *testing.T) {
+	workspace := t.TempDir()
+	vendorDirectory := filepath.Join(workspace, "vendor")
+	patchPath := filepath.Join(workspace, "patches", "rules_go.patch")
+	require.NoError(t, os.MkdirAll(filepath.Dir(patchPath), 0o755))
+	require.NoError(t, os.MkdirAll(vendorDirectory, 0o755))
+	require.NoError(t, os.WriteFile(patchPath, []byte("original"), 0o644))
+	expectedHash := sha256.Sum256([]byte("original"))
+	writeVendoredRepo(t, vendorDirectory, "rules_go+", "FILE:@@//patches/rules_go.patch "+hex.EncodeToString(expectedHash[:]))
+	require.NoError(t, os.WriteFile(patchPath, []byte("changed"), 0o644))
+
+	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	require.ErrorContains(t, err, "no longer matches its recorded SHA-256")
+
+	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte(`pin("@@rules_go+")`), 0o644))
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	require.NoError(t, err)
+	require.Len(t, vendor.Repos, 1)
+	require.True(t, vendor.Repos[0].Pinned)
+}
+
+func TestScanVendorDirectoryRejectsCorruptRegistryLockHash(t *testing.T) {
+	workspace := t.TempDir()
+	registry := filepath.Join(workspace, "vendor", "_registries", "bcr.bazel.build")
+	require.NoError(t, os.MkdirAll(registry, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(registry, "bazel_registry.json"), []byte("{}\n"), 0o644))
+	lockfile, err := json.Marshal(map[string]any{
+		"registryFileHashes": map[string]string{
+			"https://bcr.bazel.build/bazel_registry.json": hex.EncodeToString(make([]byte, sha256.Size)),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "MODULE.bazel.lock"), lockfile, 0o644))
+
+	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", []string{"https://bcr.bazel.build/"}, true)
+	require.ErrorContains(t, err, "does not match the SHA-256 recorded in MODULE.bazel.lock")
 }
 
 const vendorMarkerFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
