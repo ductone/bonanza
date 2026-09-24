@@ -2606,6 +2606,28 @@ func (rc *ruleContext[TReference, TMetadata]) newFilesToRunProviderFromStruct(th
 	return patchedFilesToRunProvider, fields.executable, err
 }
 
+// Local, uncached and unsandboxed actions cannot be delegated to a remote
+// worker and cannot use the evaluation cache. Reject them rather than silently
+// treating their execution requirements as annotations (notably C1's
+// source-tree image layers and source generators).
+func validateActionExecutionRequirements(tags []string, requirements map[string]string, useDefaultShellEnv bool) error {
+	for _, requirement := range []string{
+		"exclusive", "external", "local", "no-cache", "no-remote",
+		"no-remote-cache", "no-remote-exec", "no-sandbox",
+	} {
+		if _, ok := requirements[requirement]; ok {
+			return fmt.Errorf("execution requirement %q requires local or uncached execution, which is not supported", requirement)
+		}
+		if slices.Contains(tags, requirement) {
+			return fmt.Errorf("rule tag %q requires local or uncached execution, which is not supported", requirement)
+		}
+	}
+	if useDefaultShellEnv {
+		return errors.New("use_default_shell_env requires host environment propagation, which is not supported")
+	}
+	return nil
+}
+
 func (rca *ruleContextActions[TReference, TMetadata]) doRun(thread *starlark.Thread, b *starlark.Builtin, fnArgs starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(fnArgs) != 0 {
 		return nil, fmt.Errorf("%s: got %d positional arguments, want 0", b.Name(), len(fnArgs))
@@ -2661,6 +2683,9 @@ func (rca *ruleContextActions[TReference, TMetadata]) doRun(thread *starlark.Thr
 		})),
 		"use_default_shell_env?", unpack.Bind(thread, &useDefaultShellEnv, unpack.Bool),
 	); err != nil {
+		return nil, err
+	}
+	if err := validateActionExecutionRequirements(rc.ruleTarget.Message.Tags, executionRequirements, useDefaultShellEnv); err != nil {
 		return nil, err
 	}
 
