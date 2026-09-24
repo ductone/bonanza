@@ -158,6 +158,40 @@ var (
 	targetIdentifierGitRepository = util.Must(label.NewCanonicalStarlarkIdentifier("@@bazel_tools+//tools/build_defs/repo:git.bzl%git_repository"))
 )
 
+func unpackModuleExtensionRepos(thread *starlark.Thread, name string, args starlark.Tuple, kwargs []starlark.Tuple) (*moduleExtensionProxyValue, map[label.ApparentRepo]label.ApparentRepo, error) {
+	if len(args) < 1 {
+		return nil, nil, fmt.Errorf("%s: got %d positional arguments, want at least 1", name, len(args))
+	}
+	proxyValue := args.Index(0)
+	proxyObject, ok := proxyValue.(*moduleExtensionProxyValue)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s: for parameter 0: got %s, want module_extension_proxy", name, proxyValue.Type())
+	}
+
+	repos := make(map[label.ApparentRepo]label.ApparentRepo, len(args)-1+len(kwargs))
+	for i := 1; i < len(args); i++ {
+		var repo label.ApparentRepo
+		if err := unpack.ApparentRepo.UnpackInto(thread, args[i], &repo); err != nil {
+			return nil, nil, fmt.Errorf("%s: for parameter %d: %w", name, i, err)
+		}
+		repos[repo] = repo
+	}
+	for _, kwarg := range kwargs {
+		var key, value label.ApparentRepo
+		if err := unpack.ApparentRepo.UnpackInto(thread, kwarg[0], &key); err != nil {
+			return nil, nil, fmt.Errorf("%s: for parameter %s: %w", name, kwarg[0].(starlark.String), err)
+		}
+		if err := unpack.ApparentRepo.UnpackInto(thread, kwarg[1], &value); err != nil {
+			return nil, nil, fmt.Errorf("%s: for parameter %s: %w", name, kwarg[0].(starlark.String), err)
+		}
+		if _, ok := repos[key]; ok {
+			return nil, nil, fmt.Errorf("%s: repository %s declared multiple times", name, kwarg[0].(starlark.String))
+		}
+		repos[key] = value
+	}
+	return proxyObject, repos, nil
+}
+
 // ParseModuleDotBazel parses a MODULE.bazel file, and call into
 // ModuleDotBazelHandler for every observed declaration.
 func ParseModuleDotBazel(contents string, filename label.CanonicalLabel, localPathFormat path.Format, handler RootModuleDotBazelHandler) error {
@@ -253,6 +287,18 @@ func ParseModuleDotBazel(contents string, filename label.CanonicalLabel, localPa
 			"git_override": starlark.NewBuiltin("git_override", repositoryRuleOverrideFunc(targetIdentifierGitRepository)),
 			"include": starlark.NewBuiltin("include", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 				return nil, errors.New("include() is not permitted, as it prevents modules from being reused")
+			}),
+			"inject_repo": starlark.NewBuiltin("inject_repo", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+				_, _, err := unpackModuleExtensionRepos(thread, b.Name(), args, kwargs)
+				if err != nil {
+					return nil, err
+				}
+				// Bazel ignores inject_repo() in dependency modules. Keep active
+				// root-module injections unsupported instead of dropping them.
+				if _, child := handler.(*overrideIgnoringRootModuleDotBazelHandler); child {
+					return starlark.None, nil
+				}
+				return nil, errors.New("inject_repo() in the root module is not supported")
 			}),
 			"local_path_override": starlark.NewBuiltin("local_path_override", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 				var moduleName label.Module
@@ -413,40 +459,11 @@ func ParseModuleDotBazel(contents string, filename label.CanonicalLabel, localPa
 				}, nil
 			}),
 			"use_repo": starlark.NewBuiltin("use_repo", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-				if len(args) < 1 {
-					return nil, fmt.Errorf("%s: got %d positional arguments, want at least 1", b.Name(), len(args))
+				proxy, repos, err := unpackModuleExtensionRepos(thread, b.Name(), args, kwargs)
+				if err != nil {
+					return nil, err
 				}
-
-				proxyValue := args.Index(0)
-				proxyObject, ok := proxyValue.(*moduleExtensionProxyValue)
-				if !ok {
-					return nil, fmt.Errorf("%s: for parameter 0: got %s, want module_extension_proxy", b.Name(), proxyValue.Type())
-				}
-
-				repos := map[label.ApparentRepo]label.ApparentRepo{}
-				for i := 1; i < len(args); i++ {
-					var repo label.ApparentRepo
-					if err := unpack.ApparentRepo.UnpackInto(thread, args[i], &repo); err != nil {
-						return nil, fmt.Errorf("%s: for parameter %d: %w", b.Name(), i, err)
-					}
-					repos[repo] = repo
-				}
-
-				for _, kwarg := range kwargs {
-					var key, value label.ApparentRepo
-					if err := unpack.ApparentRepo.UnpackInto(thread, kwarg[0], &key); err != nil {
-						return nil, fmt.Errorf("%s: for parameter %s: %w", b.Name(), kwarg[0].(starlark.String), err)
-					}
-					if err := unpack.ApparentRepo.UnpackInto(thread, kwarg[1], &value); err != nil {
-						return nil, fmt.Errorf("%s: for parameter %s: %w", b.Name(), kwarg[0].(starlark.String), err)
-					}
-					if _, ok := repos[key]; ok {
-						return nil, fmt.Errorf("%s: repository %s declared multiple times", b.Name(), kwarg[0].(starlark.String))
-					}
-					repos[key] = value
-				}
-
-				return starlark.None, proxyObject.proxy.UseRepo(repos)
+				return starlark.None, proxy.proxy.UseRepo(repos)
 			}),
 			"use_repo_rule": starlark.NewBuiltin("use_repo_rule", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 				var repoRuleBzlFile label.ApparentLabel
