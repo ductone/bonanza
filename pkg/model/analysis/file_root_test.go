@@ -135,7 +135,7 @@ func TestFileRoot(t *testing.T) {
 			{"VolatileRunfiles", "volatile-status.txt", specification.VolatileWorkspaceStatus, model_analysis_pb.DirectoryLayout_RUNFILES},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
-				e := NewMockFileRootEnvironmentForTesting(ctrl)
+				e := newFileRootEnvironmentForTesting(ctrl)
 				e.EXPECT().GetBuildSpecificationValue(testutil.EqProto(t, &model_analysis_pb.BuildSpecification_Key{})).
 					Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](specification))
 				bct.expectGetDirectoryCreationParametersObjectValue(t, e)
