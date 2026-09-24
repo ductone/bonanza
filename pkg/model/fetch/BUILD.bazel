@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "fetch",
@@ -6,6 +6,7 @@ go_library(
         "fetcher.go",
         "http_fetcher.go",
         "local_executor.go",
+        "repository_proxy_fetcher.go",
         "scheme_demultiplexing_fetcher.go",
     ],
     importpath = "bonanza.build/pkg/model/fetch",
@@ -23,9 +24,22 @@ go_library(
         "//pkg/storage/object",
         "//pkg/storage/object/namespacemapping",
         "@com_github_buildbarn_bb_remote_execution//pkg/filesystem/pool",
+        "@com_github_buildbarn_bb_storage//pkg/auth",
         "@com_github_buildbarn_bb_storage//pkg/util",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "fetch_test",
+    srcs = ["repository_proxy_fetcher_test.go"],
+    embed = [":fetch"],
+    deps = [
+        "//pkg/proto/model/fetch",
+        "@com_github_buildbarn_bb_storage//pkg/auth",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )
