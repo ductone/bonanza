@@ -22,4 +22,4 @@ package analysis
 // previously cached evaluation results. This is intentional, as
 // dependency hashing subsequently limits recomputation to values that
 // actually differ. Bumps are expected to be rare.
-const SemanticsVersion = 5
+const SemanticsVersion = 6
