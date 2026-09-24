@@ -115,6 +115,8 @@ func main() {
 	}
 	fmt.Printf("  appendArgument(argument string) error\n")
 	fmt.Printf("  appendBuildSettingOverride(override BuildSettingOverride)\n")
+	fmt.Printf("  appendRCAnnouncement(directive string, option string)\n")
+	fmt.Printf("  getRCAnnouncements() []string\n")
 	fmt.Printf("}\n")
 
 	for _, commandName := range slices.Sorted(maps.Keys(commands)) {
@@ -137,13 +139,16 @@ func main() {
 			fmt.Printf("Arguments []string\n")
 		}
 		fmt.Printf("BuildSettingOverrides []BuildSettingOverride\n")
+		fmt.Printf("RCAnnouncements []string\n")
 		fmt.Printf("}\n")
 
 		fmt.Printf("func (c *%sCommand) Reset() {\n", commandSymbolName)
 		for _, ancestorName := range slices.Sorted(maps.Keys(allAncestors)) {
 			fmt.Printf("c.%sFlags.Reset()\n", toSymbolName(ancestorName, true))
 		}
+		fmt.Printf("c.RCAnnouncements = nil\n")
 		fmt.Printf("}\n")
+		fmt.Printf("func (c *%sCommand) getRCAnnouncements() []string { return c.RCAnnouncements }\n", commandSymbolName)
 
 		for _, flagsName := range slices.Sorted(maps.Keys(commandFlags)) {
 			flagsSymbolName := toSymbolName(flagsName, true)
@@ -167,6 +172,9 @@ func main() {
 
 		fmt.Printf("func (c *%sCommand) appendBuildSettingOverride(override BuildSettingOverride) {\n", commandSymbolName)
 		fmt.Printf("  c.BuildSettingOverrides = append(c.BuildSettingOverrides, override)\n")
+		fmt.Printf("}\n")
+		fmt.Printf("func (c *%sCommand) appendRCAnnouncement(directive string, option string) {\n", commandSymbolName)
+		fmt.Printf("  c.RCAnnouncements = append(c.RCAnnouncements, formatRCAnnouncement(directive, option))\n")
 		fmt.Printf("}\n")
 	}
 
@@ -192,6 +200,7 @@ func main() {
 	fmt.Printf("      stack = append(stack, stackEntry{\n")
 	fmt.Printf("        remainingArgs: directives[i],\n")
 	fmt.Printf("        mustApply: ancestor.mustApply,\n")
+	fmt.Printf("        directiveName: ancestor.name,\n")
 	fmt.Printf("      })\n")
 	fmt.Printf("    }\n")
 	fmt.Printf("  }\n")
@@ -206,6 +215,7 @@ func main() {
 	fmt.Printf("      mustApply := currentStackEntry.mustApply\n")
 	fmt.Printf("      firstArg := (*currentArgs)[0]\n")
 	fmt.Printf("      (*currentArgs) = (*currentArgs)[1:]\n")
+	fmt.Printf("      if currentStackEntry.directiveName != \"\" { cmd.appendRCAnnouncement(currentStackEntry.directiveName, firstArg) }\n")
 	fmt.Printf("      if allowFlags && len(firstArg) > 1 && firstArg[0] == '-' && firstArg[1] == '-' {\n")
 	fmt.Printf("        longOptionName := firstArg\n")
 	fmt.Printf("        var optionValue string\n")

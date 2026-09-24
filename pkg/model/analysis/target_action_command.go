@@ -576,13 +576,15 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 	directoryCreationParametersMessage := e.GetDirectoryCreationParametersValue(&model_analysis_pb.DirectoryCreationParameters_Key{})
 	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
 	fileCreationParametersMessage := e.GetFileCreationParametersValue(&model_analysis_pb.FileCreationParameters_Key{})
+	buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
 	if !action.IsSet() ||
 		!allBuiltinsModulesNames.IsSet() ||
 		!gotActionEncoder ||
 		!gotActionReaders ||
 		!directoryCreationParametersMessage.IsSet() ||
 		!gotDirectoryReaders ||
-		!fileCreationParametersMessage.IsSet() {
+		!fileCreationParametersMessage.IsSet() ||
+		!buildSpecification.IsSet() {
 		return PatchedTargetActionCommandValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
@@ -621,10 +623,67 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 		return PatchedTargetActionCommandValue[TMetadata]{}, err
 	}
 
-	// TODO: This might need to reload the list if it's just a
-	// single parent element constructed through MaybeMergeNodes().
-	// TODO: Also respect use_default_shell_env.
-	environmentVariablesList := model_core.PatchList(e, model_core.Nested(action, actionDefinition.Env))
+	// Keep the original action environment by reference when no client
+	// override exists. Most Bonanza invocations take this path.
+	var environmentCandidate inlinedtree.Candidate[*model_command_pb.Command, TMetadata]
+	if len(buildSpecification.Message.ActionEnv) == 0 {
+		environmentVariablesList := model_core.PatchList(e, model_core.Nested(action, actionDefinition.Env))
+		environmentCandidate = inlinedtree.AlwaysInline(
+			environmentVariablesList.Patcher,
+			func(command model_core.PatchedMessage[*model_command_pb.Command, TMetadata]) {
+				command.Message.EnvironmentVariables = environmentVariablesList.Message
+			},
+		)
+	} else {
+		// Explicit action env wins over --action_env; the latter comes from
+		// the client and is part of the build specification/action key.
+		environment := make(map[string]string, len(buildSpecification.Message.ActionEnv))
+		for _, override := range buildSpecification.Message.ActionEnv {
+			if !override.Unset {
+				environment[override.Name] = override.Value
+			}
+		}
+		var errIterEnv error
+		for element := range btree.AllLeaves(
+			ctx,
+			actionReaders.CommandEnvironmentVariables,
+			model_core.Nested(action, actionDefinition.Env),
+			func(element model_core.Message[*model_command_pb.EnvironmentVariableList_Element, TReference]) (*model_core_pb.DecodableReference, error) {
+				return element.Message.GetParent(), nil
+			},
+			&errIterEnv,
+		) {
+			leaf := element.Message.GetLeaf()
+			if leaf == nil {
+				return PatchedTargetActionCommandValue[TMetadata]{}, errors.New("action environment variable is not a leaf")
+			}
+			environment[leaf.Name] = leaf.Value
+		}
+		if errIterEnv != nil {
+			return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("read action environment: %w", errIterEnv)
+		}
+		environmentVariablesList, envParentNodeComputer, err := convertDictToEnvironmentVariableList(ctx, environment, actionEncoder, referenceFormat, e)
+		if err != nil {
+			return PatchedTargetActionCommandValue[TMetadata]{}, fmt.Errorf("create action environment: %w", err)
+		}
+		environmentCandidate = inlinedtree.Candidate[*model_command_pb.Command, TMetadata]{
+			ExternalMessage: model_core.ProtoListToBinaryMarshaler(environmentVariablesList),
+			Encoder:         actionEncoder,
+			ParentAppender: func(
+				command model_core.PatchedMessage[*model_command_pb.Command, TMetadata],
+				externalObject *model_core.Decodable[model_core.CreatedObject[TMetadata]],
+			) error {
+				var err error
+				command.Message.EnvironmentVariables, err = btree.MaybeMergeNodes(
+					environmentVariablesList.Message,
+					externalObject,
+					command.Patcher,
+					envParentNodeComputer,
+				)
+				return err
+			},
+		}
+	}
 
 	// The provided output path pattern is relative to the output
 	// directory of the current configuration and package. Prepend
@@ -712,15 +771,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeTargetActionCommandValue(ct
 					return nil
 				},
 			},
-			inlinedtree.AlwaysInline(
-				environmentVariablesList.Patcher,
-				func(command model_core.PatchedMessage[*model_command_pb.Command, TMetadata]) {
-					// TODO: This should push out
-					// the environment variables if
-					// they get too big.
-					command.Message.EnvironmentVariables = environmentVariablesList.Message
-				},
-			),
+			environmentCandidate,
 			{
 				ExternalMessage: model_core.ProtoToBinaryMarshaler(outputPathPatternChildren),
 				Encoder:         actionEncoder,

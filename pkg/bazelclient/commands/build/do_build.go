@@ -236,6 +236,33 @@ func ResolveTargetPatterns(patterns []string, filename string) ([]string, error)
 	return patterns, nil
 }
 
+// resolveEnvironmentOverrides preserves the distinction between NAME (inherit
+// if present, otherwise unset) and NAME= (set to the empty string). The
+// effective values, not the names of inherited client variables, are sent to
+// analysis so changes invalidate the appropriate action/repository keys.
+func resolveEnvironmentOverrides(options []string, lookup func(string) (string, bool)) ([]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, error) {
+	byName := make(map[string]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, len(options))
+	for _, option := range options {
+		name, value, explicit := strings.Cut(option, "=")
+		if name == "" || strings.IndexFunc(name, func(r rune) bool {
+			return r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		}) >= 0 || (name[0] >= '0' && name[0] <= '9') || strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("invalid environment override %q", option)
+		}
+		override := &model_analysis_pb.BuildSpecification_Value_EnvironmentOverride{Name: name, Value: value}
+		if !explicit {
+			override.Value, explicit = lookup(name)
+			override.Unset = !explicit
+		}
+		byName[name] = override
+	}
+	result := make([]*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride, 0, len(byName))
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		result = append(result, byName[name])
+	}
+	return result, nil
+}
+
 // PerformBuild builds a set of target patterns in the current
 // workspace. In addition to the BuildResult key that describes the
 // build as a whole, callers may request the values of additional keys,
@@ -337,6 +364,17 @@ func PerformBuild(
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid --vendor_dir=%q: %s", commonFlags.VendorDir, err))
 		}
+	}
+	flagAliases := map[string]string{}
+	if vendorDirectory != nil {
+		maps.Copy(flagAliases, vendorDirectory.FlagAliases)
+	}
+	if err := scanModuleFlagAliases(flagAliases, workspacePathStr, rootModuleName.ToModuleInstance(nil).GetBareCanonicalRepo()); err != nil {
+		logger.Fatal(formatted.Textf("Failed to load root module flag aliases: %s", err))
+	}
+	resolvedBuildSettingOverrides, err := ResolveFlagAliases(buildSettingOverrides, flagAliases)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to resolve build flags: %s", err))
 	}
 
 	// Augment results with modules provided to --override_module.
@@ -617,6 +655,14 @@ func PerformBuild(
 		ModuleRegistryUrls:                     registryURLs,
 		StrictVendorMode:                       strictVendorMode,
 	}
+	buildSpecification.ActionEnv, err = resolveEnvironmentOverrides(buildFlags.ActionEnv, os.LookupEnv)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid --action_env: %s", err))
+	}
+	buildSpecification.RepoEnv, err = resolveEnvironmentOverrides(buildFlags.RepoEnv, os.LookupEnv)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Invalid --repo_env: %s", err))
+	}
 	switch commonFlags.LockfileMode {
 	case arguments.LockfileMode_Off:
 	case arguments.LockfileMode_Update:
@@ -824,18 +870,6 @@ func PerformBuild(
 			logger.Fatal(formatted.Textf("Invalid target pattern %#v: %s", targetPattern, err))
 		}
 		targetPatterns = append(targetPatterns, apparentTargetPattern.String())
-	}
-
-	flagAliases := map[string]string{}
-	if vendorDirectory != nil {
-		maps.Copy(flagAliases, vendorDirectory.FlagAliases)
-	}
-	if err := scanModuleFlagAliases(flagAliases, workspacePathStr, rootModuleName.ToModuleInstance(nil).GetBareCanonicalRepo()); err != nil {
-		logger.Fatal(formatted.Textf("Failed to load root module flag aliases: %s", err))
-	}
-	resolvedBuildSettingOverrides, err := ResolveFlagAliases(buildSettingOverrides, flagAliases)
-	if err != nil {
-		logger.Fatal(formatted.Textf("Failed to resolve build flags: %s", err))
 	}
 
 	// Determine the configurations for which to build. The Bazel

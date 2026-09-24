@@ -43,6 +43,7 @@ go_test(
     ],
     embed = [":arguments"],
     deps = [
+        "@com_github_buildbarn_bb_storage//pkg/filesystem",
         "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
         "@com_github_buildbarn_bb_storage//pkg/testutil",
         "@com_github_stretchr_testify//require",

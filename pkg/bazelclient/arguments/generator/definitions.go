@@ -80,6 +80,11 @@ var startupFlags = []flag{
 
 var commonFlags = []flag{
 	{
+		longName:    "announce_rc",
+		description: "Print the rc options applied to this command, including expanded --config directives.",
+		flagType:    boolFlagType{},
+	},
+	{
 		longName:    "browser_url",
 		description: "URL at which the Bonanza Browser service is hosted. This causes command line output to contain clickable links to the Bonanza Browser service.",
 		flagType:    stringFlagType{},
@@ -239,6 +244,16 @@ var commands = map[string]command{
 	"build": {
 		ancestor: "common",
 		flags: []flag{
+			{
+				longName:    "action_env",
+				description: "Set an action's default shell environment variable. NAME copies the client value (or unsets it when absent); NAME=VALUE sets it explicitly. Repeated names use the last value.",
+				flagType:    stringListFlagType{},
+			},
+			{
+				longName:    "repo_env",
+				description: "Set a repository rule and module extension environment variable. NAME copies the client value (or unsets it when absent); NAME=VALUE sets it explicitly. Repeated names use the last value.",
+				flagType:    stringListFlagType{},
+			},
 			{
 				longName:    "keep_going",
 				shortName:   "k",

@@ -152,6 +152,7 @@ go_test(
     embed = [":analysis"],
     deps = [
         "//pkg/proto/model/analysis",
+        "//pkg/proto/model/starlark",
         "@com_github_stretchr_testify//require",
     ],
 )
@@ -187,6 +188,7 @@ go_test(
         "mocks_filesystem_pool_test.go",
         "mocks_filesystem_test.go",
         "parameter_file_test.go",
+        "registered_repo_platform_test.go",
         "repo_platform_host_path_internal_test.go",
     ],
     embed = [":analysis"],

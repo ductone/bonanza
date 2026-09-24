@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"bonanza.build/pkg/label"
 	model_core "bonanza.build/pkg/model/core"
@@ -38,6 +39,26 @@ func validateConfiguredQueryExpression(expression *model_analysis_pb.QueryExpres
 	}
 }
 
+type configuredQueryFileLocation uint8
+
+const (
+	configuredQueryGenerated configuredQueryFileLocation = iota
+	configuredQueryRootSource
+	configuredQueryExternalSource
+)
+
+// classifyConfiguredQueryFile distinguishes source paths in the workspace
+// from generated outputs and external sources with no local materialization.
+func classifyConfiguredQueryFile(rootRepo, inputPath string, file *model_starlark_pb.File) (string, configuredQueryFileLocation) {
+	if file.Owner != nil {
+		return inputPath, configuredQueryGenerated
+	}
+	if source, ok := strings.CutPrefix(inputPath, "external/"+rootRepo+"/"); ok {
+		return source, configuredQueryRootSource
+	}
+	return inputPath, configuredQueryExternalSource
+}
+
 // ComputeConfiguredQueryResultValue analyzes default outputs without completing
 // any actions. File paths are in the same input-root layout as build outputs.
 func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(ctx context.Context, key *model_analysis_pb.ConfiguredQueryResult_Key, e ConfiguredQueryResultEnvironment[TReference, TMetadata]) (PatchedConfiguredQueryResultValue[TMetadata], error) {
@@ -54,6 +75,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(
 		return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("invalid root module: %w", err)
 	}
 	rootPackage := rootModule.ToModuleInstance(nil).GetBareCanonicalRepo().GetRootPackage()
+	rootRepo := rootPackage.GetCanonicalRepo().String()
 	thread := c.newStarlarkThread(ctx, e, buildSpecification.Message.BuiltinsModuleNames)
 	result := &model_analysis_pb.ConfiguredQueryResult_Value{}
 	missingDependencies := false
@@ -104,6 +126,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(
 				return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("files of %#v is not a depset", target.Label)
 			}
 			paths := map[string]struct{}{}
+			sourcePaths := map[string]struct{}{}
+			externalSourcePaths := map[string]struct{}{}
 			var iterationError error
 			for entry := range model_starlark.AllListLeafElements(ctx, c.valueReaders.List, model_core.Nested(files, filesDepset.Depset.Elements), &iterationError) {
 				file, ok := entry.Message.Kind.(*model_starlark_pb.Value_File)
@@ -114,15 +138,25 @@ func (c *baseComputer[TReference, TMetadata]) ComputeConfiguredQueryResultValue(
 				if err != nil {
 					return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("get output path of %#v: %w", target.Label, err)
 				}
-				paths[outputPath] = struct{}{}
+				queryPath, location := classifyConfiguredQueryFile(rootRepo, outputPath, file.File)
+				switch location {
+				case configuredQueryRootSource:
+					sourcePaths[queryPath] = struct{}{}
+				case configuredQueryExternalSource:
+					externalSourcePaths[queryPath] = struct{}{}
+				default:
+					paths[queryPath] = struct{}{}
+				}
 			}
 			if iterationError != nil {
 				return PatchedConfiguredQueryResultValue[TMetadata]{}, fmt.Errorf("iterate outputs of %#v: %w", target.Label, iterationError)
 			}
 			result.Targets = append(result.Targets, &model_analysis_pb.ConfiguredQueryResult_Value_Target{
-				Label: target.Label,
-				Kind:  target.Kind,
-				Files: slices.Sorted(maps.Keys(paths)),
+				Label:               target.Label,
+				Kind:                target.Kind,
+				Files:               slices.Sorted(maps.Keys(paths)),
+				SourceFiles:         slices.Sorted(maps.Keys(sourcePaths)),
+				ExternalSourceFiles: slices.Sorted(maps.Keys(externalSourcePaths)),
 			})
 		}
 	}

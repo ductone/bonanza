@@ -46,6 +46,33 @@ func (c *baseComputer[TReference, TMetadata]) decodeStringDict(ctx context.Conte
 	return o, nil
 }
 
+func mergeRepositoryEnvironment(
+	platform []*model_analysis_pb.RegisteredRepoPlatform_Value_EnvironmentVariable,
+	overrides []*model_analysis_pb.BuildSpecification_Value_EnvironmentOverride,
+) []*model_analysis_pb.RegisteredRepoPlatform_Value_EnvironmentVariable {
+	if len(overrides) == 0 {
+		return platform
+	}
+	values := make(map[string]string, len(platform)+len(overrides))
+	for _, variable := range platform {
+		values[variable.Name] = variable.Value
+	}
+	for _, override := range overrides {
+		if override.Unset {
+			delete(values, override.Name)
+		} else {
+			values[override.Name] = override.Value
+		}
+	}
+	result := make([]*model_analysis_pb.RegisteredRepoPlatform_Value_EnvironmentVariable, 0, len(values))
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		result = append(result, &model_analysis_pb.RegisteredRepoPlatform_Value_EnvironmentVariable{
+			Name: name, Value: values[name],
+		})
+	}
+	return result
+}
+
 func (c *baseComputer[TReference, TMetadata]) ComputeRegisteredRepoPlatformValue(ctx context.Context, key *model_analysis_pb.RegisteredRepoPlatform_Key, e RegisteredRepoPlatformEnvironment[TReference, TMetadata]) (PatchedRegisteredRepoPlatformValue[TMetadata], error) {
 	// Obtain the label of the repo platform that was provided by
 	// the client through the --repo_platform command line flag.
@@ -153,6 +180,10 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRegisteredRepoPlatformValue
 	if repositoryOSName == "" {
 		return PatchedRegisteredRepoPlatformValue[TMetadata]{}, fmt.Errorf("repository_os_name field of PlatformInfo of repo platform %#v is not set to a non-empty string", repoPlatformLabelStr)
 	}
+
+	// Client overrides are visible both through repository_os.environ and in
+	// the environment of repository rules and module extensions.
+	repositoryOSEnviron = mergeRepositoryEnvironment(repositoryOSEnviron, buildSpecification.RepoEnv)
 
 	return model_core.NewSimplePatchedMessage[TMetadata](
 		&model_analysis_pb.RegisteredRepoPlatform_Value{

@@ -106,10 +106,24 @@ hit rate.
 `bonanza_bazel build` materializes outputs beneath `bonanza-out`, and
 `bonanza_bazel test`, `run`, and loading-phase `query` are supported.
 `cquery --output=files` analyzes configured `DefaultInfo.files` without
-executing the target's actions. Its target selection supports patterns,
-`set()`, set operations, `kind()`, and `filter()`; configured dependency
-walks and `attr()` are rejected rather than using loading-phase results.
-Build and test accept `--target_pattern_file`.
+executing target actions. It prints root-module source paths relative to the
+workspace (for example, `bazel/python/check.py`) and generated output paths
+under the absolute `bonanza-out/bazel-out/...` tree; build those targets first
+to materialize their files. External source files without a local materialized
+path fail instead of printing a path that does not exist. Target selection
+supports patterns, `set()`, set operations, `kind()`, and `filter()`; configured
+dependency walks and `attr()` are rejected rather than using loading-phase
+results. Build and test accept `--target_pattern_file`.
+
+`--action_env=NAME[=VALUE]` and `--repo_env=NAME[=VALUE]` capture explicit
+values or the current client value (missing names unset an inherited value);
+later occurrences win. Action overrides are merged beneath explicit action
+environment variables, while repository overrides replace the registered
+repository platform environment. `--announce_rc` reports applied rc and
+`--config` options with environment values redacted. Unsupported rc startup
+options, including Bazel's server-only `--max_idle_secs`, fail explicitly.
+Bonanza is not yet a drop-in replacement for C1's unmodified `.bazelrc` or
+its Buildbarn endpoint.
 
 `--vendor_dir` uploads Bazel's full canonical repository names and
 lockfile-verified registry metadata. It requires `--lockfile_mode=error`;

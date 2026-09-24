@@ -129,6 +129,14 @@ message BuildSpecification {
       repeated File files = 3;
     }
 
+    // A client environment override. Unset removes a variable inherited from
+    // the selected execution or repository platform.
+    message EnvironmentOverride {
+      string name = 1;
+      string value = 2;
+      bool unset = 3;
+    }
+
     // Non-empty list of modules for which explicit copies of source code
     // are provided.
     repeated Module modules = 1;
@@ -217,6 +225,11 @@ message BuildSpecification {
     // validated snapshot. Normal vendor mode resolves unvendored repos using
     // their repository rules and fetches registry files absent from the mirror.
     bool strict_vendor_mode = 18;
+
+    // Sorted by name. These affect action and repository evaluation keys; the
+    // worker must never read the client's ambient environment implicitly.
+    repeated EnvironmentOverride action_env = 19;
+    repeated EnvironmentOverride repo_env = 20;
   }
 }
 
@@ -2550,8 +2563,13 @@ message ConfiguredQueryResult {
     message Target {
       string label = 1;
       string kind = 2;
-      // Paths relative to the root of a Bonanza materialized output tree.
+      // Generated paths relative to the root of a materialized output tree.
       repeated string files = 3;
+      // Root module source paths relative to the workspace (not materialized).
+      repeated string source_files = 4;
+      // Non-root source paths with no workspace-local materialization. The
+      // client reports these as unsupported for --output=files.
+      repeated string external_source_files = 5;
     }
     repeated Target targets = 1;
   }

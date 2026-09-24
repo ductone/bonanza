@@ -49,6 +49,23 @@ type commandAncestor struct {
 	mustApply bool
 }
 
+// formatRCAnnouncement avoids echoing environment values and encryption keys
+// into logs. Bare NAME overrides are still reported by name.
+func formatRCAnnouncement(directive, option string) string {
+	for _, flag := range []string{"--action_env=", "--repo_env="} {
+		if value, ok := strings.CutPrefix(option, flag); ok {
+			if name, _, explicit := strings.Cut(value, "="); explicit {
+				option = flag + name + "=<redacted>"
+			}
+			break
+		}
+	}
+	if strings.HasPrefix(option, "--remote_encryption_key=") {
+		option = "--remote_encryption_key=<redacted>"
+	}
+	return directive + ": " + option
+}
+
 // ParseCommandAndArguments parses the name of a command like "build" or
 // "test", and any of the arguments that follow that are specific to
 // that command.
