@@ -69,6 +69,24 @@ func TestParseCommandAndArguments(t *testing.T) {
 			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
 		})
 
+		t.Run("ReleaseStampAndEmbedLabel", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build", "--stamp", "--nostamp", "--stamp=1", "--embed_label=deadbeef", "//:binary",
+			})
+			require.NoError(t, err)
+			build := command.(*arguments.BuildCommand)
+			require.Equal(t, "deadbeef", build.BuildFlags.EmbedLabel)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "true"},
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "false"},
+				{Label: "@bazel_tools//command_line_option:stamp", Value: "true"},
+			}, build.BuildSettingOverrides)
+			_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build", "--stamp=perhaps", "//:binary",
+			})
+			require.ErrorContains(t, err, "stamp")
+		})
+
 		t.Run("BuildSettingOverrideNegatedWithValue", func(t *testing.T) {
 			_, err := arguments.ParseCommandAndArguments(
 				arguments.ConfigurationDirectives{},

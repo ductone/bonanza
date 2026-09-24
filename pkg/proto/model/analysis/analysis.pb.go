@@ -4986,6 +4986,8 @@ type BuildSpecification_Value struct {
 	StrictVendorMode                       bool                                            `protobuf:"varint,18,opt,name=strict_vendor_mode,json=strictVendorMode,proto3" json:"strict_vendor_mode,omitempty"`
 	ActionEnv                              []*BuildSpecification_Value_EnvironmentOverride `protobuf:"bytes,19,rep,name=action_env,json=actionEnv,proto3" json:"action_env,omitempty"`
 	RepoEnv                                []*BuildSpecification_Value_EnvironmentOverride `protobuf:"bytes,20,rep,name=repo_env,json=repoEnv,proto3" json:"repo_env,omitempty"`
+	StableWorkspaceStatus                  string                                          `protobuf:"bytes,21,opt,name=stable_workspace_status,json=stableWorkspaceStatus,proto3" json:"stable_workspace_status,omitempty"`
+	VolatileWorkspaceStatus                string                                          `protobuf:"bytes,22,opt,name=volatile_workspace_status,json=volatileWorkspaceStatus,proto3" json:"volatile_workspace_status,omitempty"`
 	unknownFields                          protoimpl.UnknownFields
 	sizeCache                              protoimpl.SizeCache
 }
@@ -5144,6 +5146,20 @@ func (x *BuildSpecification_Value) GetRepoEnv() []*BuildSpecification_Value_Envi
 		return x.RepoEnv
 	}
 	return nil
+}
+
+func (x *BuildSpecification_Value) GetStableWorkspaceStatus() string {
+	if x != nil {
+		return x.StableWorkspaceStatus
+	}
+	return ""
+}
+
+func (x *BuildSpecification_Value) GetVolatileWorkspaceStatus() string {
+	if x != nil {
+		return x.VolatileWorkspaceStatus
+	}
+	return ""
 }
 
 type BuildSpecification_Value_Module struct {
@@ -5558,6 +5574,7 @@ type BuildResult_Key struct {
 	state          protoimpl.MessageState           `protogen:"open.v1"`
 	Configurations []*BuildResult_Key_Configuration `protobuf:"bytes,1,rep,name=configurations,proto3" json:"configurations,omitempty"`
 	TargetPatterns []string                         `protobuf:"bytes,2,rep,name=target_patterns,json=targetPatterns,proto3" json:"target_patterns,omitempty"`
+	OutputGroups   []string                         `protobuf:"bytes,3,rep,name=output_groups,json=outputGroups,proto3" json:"output_groups,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -5602,6 +5619,13 @@ func (x *BuildResult_Key) GetConfigurations() []*BuildResult_Key_Configuration {
 func (x *BuildResult_Key) GetTargetPatterns() []string {
 	if x != nil {
 		return x.TargetPatterns
+	}
+	return nil
+}
+
+func (x *BuildResult_Key) GetOutputGroups() []string {
+	if x != nil {
+		return x.OutputGroups
 	}
 	return nil
 }
@@ -13244,6 +13268,7 @@ type TargetCompletion_Key struct {
 	state                  protoimpl.MessageState   `protogen:"open.v1"`
 	Label                  string                   `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
 	ConfigurationReference *core.DecodableReference `protobuf:"bytes,2,opt,name=configuration_reference,json=configurationReference,proto3" json:"configuration_reference,omitempty"`
+	OutputGroups           []string                 `protobuf:"bytes,3,rep,name=output_groups,json=outputGroups,proto3" json:"output_groups,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -13288,6 +13313,13 @@ func (x *TargetCompletion_Key) GetLabel() string {
 func (x *TargetCompletion_Key) GetConfigurationReference() *core.DecodableReference {
 	if x != nil {
 		return x.ConfigurationReference
+	}
+	return nil
+}
+
+func (x *TargetCompletion_Key) GetOutputGroups() []string {
+	if x != nil {
+		return x.OutputGroups
 	}
 	return nil
 }
@@ -15644,9 +15676,9 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x0fexecute_request\x18\x01 \x01(\v2&.bonanza.model.analysis.ExecuteRequestR\x0eexecuteRequest\x1a\x9e\x01\n" +
 	"\x05Value\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x03R\bexitCode\x12x\n" +
-	"\x11outputs_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xea\x11\n" +
+	"\x11outputs_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB#\xea\xd7 \x1f\x12\x1dbonanza.model.command.OutputsR\x10outputsReference\"\xde\x12\n" +
 	"\x12BuildSpecification\x1a\x05\n" +
-	"\x03Key\x1a\xcc\x11\n" +
+	"\x03Key\x1a\xc0\x12\n" +
 	"\x05Value\x12Q\n" +
 	"\amodules\x18\x01 \x03(\v27.bonanza.model.analysis.BuildSpecification.Value.ModuleR\amodules\x12(\n" +
 	"\x10root_module_name\x18\x02 \x01(\tR\x0erootModuleName\x12y\n" +
@@ -15667,7 +15699,9 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x12strict_vendor_mode\x18\x12 \x01(\bR\x10strictVendorMode\x12c\n" +
 	"\n" +
 	"action_env\x18\x13 \x03(\v2D.bonanza.model.analysis.BuildSpecification.Value.EnvironmentOverrideR\tactionEnv\x12_\n" +
-	"\brepo_env\x18\x14 \x03(\v2D.bonanza.model.analysis.BuildSpecification.Value.EnvironmentOverrideR\arepoEnv\x1a\x84\x01\n" +
+	"\brepo_env\x18\x14 \x03(\v2D.bonanza.model.analysis.BuildSpecification.Value.EnvironmentOverrideR\arepoEnv\x126\n" +
+	"\x17stable_workspace_status\x18\x15 \x01(\tR\x15stableWorkspaceStatus\x12:\n" +
+	"\x19volatile_workspace_status\x18\x16 \x01(\tR\x17volatileWorkspaceStatus\x1a\x84\x01\n" +
 	"\x06Module\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12f\n" +
 	"\x18root_directory_reference\x18\x02 \x01(\v2,.bonanza.model.filesystem.DirectoryReferenceR\x16rootDirectoryReference\x1at\n" +
@@ -15691,11 +15725,12 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x13BuiltinsModuleNames\x1a\x05\n" +
 	"\x03Key\x1a;\n" +
 	"\x05Value\x122\n" +
-	"\x15builtins_module_names\x18\x01 \x03(\tR\x13builtinsModuleNames\"\xc6\x03\n" +
-	"\vBuildResult\x1a\xd9\x02\n" +
+	"\x15builtins_module_names\x18\x01 \x03(\tR\x13builtinsModuleNames\"\xeb\x03\n" +
+	"\vBuildResult\x1a\xfe\x02\n" +
 	"\x03Key\x12]\n" +
 	"\x0econfigurations\x18\x01 \x03(\v25.bonanza.model.analysis.BuildResult.Key.ConfigurationR\x0econfigurations\x12'\n" +
-	"\x0ftarget_patterns\x18\x02 \x03(\tR\x0etargetPatterns\x1aB\n" +
+	"\x0ftarget_patterns\x18\x02 \x03(\tR\x0etargetPatterns\x12#\n" +
+	"\routput_groups\x18\x03 \x03(\tR\foutputGroups\x1aB\n" +
 	"\x14BuildSettingOverride\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\x1a\x85\x01\n" +
@@ -16258,11 +16293,12 @@ const file_bonanza_build_pkg_proto_model_analysis_analysis_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\v2&.bonanza.model.analysis.TargetActionIdR\x02id\x1aU\n" +
 	"\x05Value\x12L\n" +
 	"\voutput_root\x18\x01 \x01(\v2+.bonanza.model.filesystem.DirectoryContentsR\n" +
-	"outputRoot\"\xa2\x03\n" +
-	"\x10TargetCompletion\x1a\xb0\x01\n" +
+	"outputRoot\"\xc7\x03\n" +
+	"\x10TargetCompletion\x1a\xd5\x01\n" +
 	"\x03Key\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x92\x01\n" +
-	"\x17configuration_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB1\xea\xd7 -\x1a+bonanza.model.analysis.BuildSettingOverrideR\x16configurationReference\x1a\xda\x01\n" +
+	"\x17configuration_reference\x18\x02 \x01(\v2&.bonanza.model.core.DecodableReferenceB1\xea\xd7 -\x1a+bonanza.model.analysis.BuildSettingOverrideR\x16configurationReference\x12#\n" +
+	"\routput_groups\x18\x03 \x03(\tR\foutputGroups\x1a\xda\x01\n" +
 	"\x05Value\x12L\n" +
 	"\voutput_root\x18\x01 \x01(\v2+.bonanza.model.filesystem.DirectoryContentsR\n" +
 	"outputRoot\x12'\n" +

@@ -110,6 +110,71 @@ func TestFileRoot(t *testing.T) {
 		require.ErrorContains(t, err, "invalid file label: ")
 	})
 
+	t.Run("WorkspaceStatus", func(t *testing.T) {
+		specification := &model_analysis_pb.BuildSpecification_Value{
+			StableWorkspaceStatus:   "BUILD_EMBED_LABEL abc123\n",
+			VolatileWorkspaceStatus: "BUILD_TIMESTAMP 1790274600\n",
+		}
+		for _, testCase := range []struct {
+			name, fileName, contents string
+			layout                   model_analysis_pb.DirectoryLayout
+		}{
+			{"StableInputRoot", "stable-status.txt", specification.StableWorkspaceStatus, model_analysis_pb.DirectoryLayout_INPUT_ROOT},
+			{"VolatileRunfiles", "volatile-status.txt", specification.VolatileWorkspaceStatus, model_analysis_pb.DirectoryLayout_RUNFILES},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				e := NewMockFileRootEnvironmentForTesting(ctrl)
+				e.EXPECT().GetBuildSpecificationValue(testutil.EqProto(t, &model_analysis_pb.BuildSpecification_Key{})).
+					Return(model_core.NewSimpleMessage[model_core.CreatedObjectTree](specification))
+				bct.expectGetDirectoryCreationParametersObjectValue(t, e)
+				bct.expectGetFileCreationParametersObjectValue(t, e)
+				bct.expectCaptureCreatedObject(e).AnyTimes()
+
+				fileRoot, err := bct.computer.ComputeFileRootValue(
+					ctx,
+					model_core.NewSimpleMessage[model_core.CreatedObjectTree](&model_analysis_pb.FileRoot_Key{
+						File: &model_starlark_pb.File{
+							Label: "@@builtins_core+//:" + testCase.fileName,
+							Owner: &model_starlark_pb.File_Owner{
+								TargetName: "stamp",
+								Type:       model_starlark_pb.File_Owner_FILE,
+							},
+						},
+						DirectoryLayout: testCase.layout,
+					}),
+					e,
+				)
+				require.NoError(t, err)
+				requireEqualPatchedMessage(t, func(patcher *model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.FileRoot_Value {
+					fileContents := &model_filesystem_pb.DirectoryContents{
+						Leaves: &model_filesystem_pb.DirectoryContents_LeavesInline{
+							LeavesInline: &model_filesystem_pb.Leaves{Files: []*model_filesystem_pb.FileNode{{
+								Name: testCase.fileName,
+								Properties: &model_filesystem_pb.FileProperties{Contents: &model_filesystem_pb.FileContents{
+									Level: &model_filesystem_pb.FileContents_ChunkReference{
+										ChunkReference: attachObject(patcher, newObject(func(*model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) encoding.BinaryMarshaler {
+											return model_core.NewRawBinaryMarshaler([]byte(testCase.contents))
+										})),
+									},
+									TotalSizeBytes: uint64(len(testCase.contents)),
+								}},
+							}}},
+						},
+					}
+					root := singleChildDirectoryContents("builtins_core+", fileContents)
+					if testCase.layout == model_analysis_pb.DirectoryLayout_INPUT_ROOT {
+						root = singleChildDirectoryContents("bazel-out",
+							singleChildDirectoryContents("none",
+								singleChildDirectoryContents("bin",
+									singleChildDirectoryContents("external", root))))
+					}
+					return &model_analysis_pb.FileRoot_Value{RootDirectory: root}
+				}, fileRoot)
+				fileRoot.Discard()
+			})
+		}
+	})
+
 	t.Run("SourceFile", func(t *testing.T) {
 		t.Run("NonExistent", func(t *testing.T) {
 			// Labels that refer to non-existent files

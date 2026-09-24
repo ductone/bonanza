@@ -415,6 +415,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeBuildResultValue(ctx contex
 						return &model_analysis_pb.TargetCompletion_Key{
 							Label:                  visibleTargetValue.Message.Label,
 							ConfigurationReference: model_core.Patch(e, clonedConfigurationReference).Merge(patcher),
+							OutputGroups:           key.OutputGroups,
 						}
 					}),
 				)

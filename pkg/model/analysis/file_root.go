@@ -493,6 +493,70 @@ func (baseComputer[TReference, TMetadata]) ComputeFileRootValue(ctx context.Cont
 		return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("invalid file label: %w", err)
 	}
 
+	// ctx.info_file and ctx.version_file are synthetic outputs, not files
+	// in the builtins_core source tree. Materialize their contents from
+	// the invocation's build specification so stamped actions receive
+	// exactly the same bytes that entered the build key.
+	if owner := f.Message.Owner; owner != nil &&
+		owner.TargetName == "stamp" &&
+		owner.Type == model_starlark_pb.File_Owner_FILE &&
+		owner.ConfigurationReference == nil &&
+		(fileLabel.String() == "@@builtins_core+//:stable-status.txt" ||
+			fileLabel.String() == "@@builtins_core+//:volatile-status.txt") {
+		specification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
+		if !specification.IsSet() {
+			return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+		contents := specification.Message.StableWorkspaceStatus
+		if fileLabel.String() == "@@builtins_core+//:volatile-status.txt" {
+			contents = specification.Message.VolatileWorkspaceStatus
+		}
+		directoryParameters, gotDirectoryParameters := e.GetDirectoryCreationParametersObjectValue(&model_analysis_pb.DirectoryCreationParametersObject_Key{})
+		fileParameters, gotFileParameters := e.GetFileCreationParametersObjectValue(&model_analysis_pb.FileCreationParametersObject_Key{})
+		if !gotDirectoryParameters || !gotFileParameters {
+			return PatchedFileRootValue[TMetadata]{}, evaluation.ErrMissingDependency
+		}
+		fileContents, err := model_filesystem.CreateFileMerkleTree(
+			ctx, fileParameters, strings.NewReader(contents),
+			model_filesystem.NewSimpleFileMerkleTreeCapturer(e),
+		)
+		if err != nil {
+			return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("create workspace status file: %w", err)
+		}
+		components, err := getPackageOutputDirectoryComponents(
+			model_core.Nested(f, owner.ConfigurationReference),
+			fileLabel.GetCanonicalPackage(),
+			key.Message.DirectoryLayout,
+		)
+		if err != nil {
+			return PatchedFileRootValue[TMetadata]{}, err
+		}
+		components = append(components, fileLabel.GetTargetName().ToComponents()...)
+		group, groupCtx := errgroup.WithContext(ctx)
+		var createdDirectory model_filesystem.CreatedDirectory[TMetadata]
+		group.Go(func() error {
+			return model_filesystem.CreateDirectoryMerkleTree(
+				groupCtx,
+				semaphore.NewWeighted(1),
+				group,
+				directoryParameters,
+				&singleFileDirectory[TMetadata, TMetadata]{
+					components: components,
+					file:       model_filesystem.NewSimpleCapturableFile(fileContents),
+				},
+				model_filesystem.NewSimpleDirectoryMerkleTreeCapturer(e),
+				&createdDirectory,
+			)
+		})
+		if err := group.Wait(); err != nil {
+			return PatchedFileRootValue[TMetadata]{}, fmt.Errorf("create workspace status root: %w", err)
+		}
+		return model_core.NewPatchedMessage(
+			&model_analysis_pb.FileRoot_Value{RootDirectory: createdDirectory.Message.Message},
+			createdDirectory.Message.Patcher,
+		), nil
+	}
+
 	if o := f.Message.Owner; o != nil {
 		targetName, err := label.NewTargetName(o.TargetName)
 		if err != nil {

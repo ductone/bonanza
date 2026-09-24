@@ -268,6 +268,13 @@ var commands = map[string]command{
 				flagType:    buildSettingFlagType{},
 			},
 			{
+				longName:    "output_groups",
+				description: "Select output groups to build. Named groups are provided by OutputGroupInfo; 'default' selects DefaultInfo.files.",
+				flagType: stringFlagType{
+					defaultValue: "default",
+				},
+			},
+			{
 				longName:    "output_path",
 				description: "Directory into which the output files of the targets that were built are written. When left empty, outputs are written to a directory named \"bonanza-out\" inside the workspace.",
 				flagType:    stringFlagType{},
@@ -276,6 +283,16 @@ var commands = map[string]command{
 				longName:    "platforms",
 				description: "The labels of the platform rules describing the target platforms for the current command.",
 				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "embed_label",
+				description: "Stable build label recorded in the workspace status file for stamped outputs.",
+				flagType:    stringFlagType{},
+			},
+			{
+				longName:    "stamp",
+				description: "Include workspace status in actions that opt into stamping.",
+				flagType:    boolBuildSettingFlagType{},
 			},
 			{
 				longName:    "target_pattern_file",

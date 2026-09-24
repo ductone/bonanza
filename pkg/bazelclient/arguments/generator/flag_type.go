@@ -88,6 +88,37 @@ func (boolFlagType) emitStartupParser(longName string) {
 	fmt.Printf("  flags.%s = false\n", longSymbolName)
 }
 
+// boolBuildSettingFlagType passes a native boolean option to the same build
+// setting that transitions and Starlark fragments read. Unlike a plain bool
+// flag, this keeps --stamp, --nostamp and --stamp=false in one configuration.
+type boolBuildSettingFlagType struct{}
+
+func (boolBuildSettingFlagType) emitStructField(string)        {}
+func (boolBuildSettingFlagType) emitDefaultInitializer(string) {}
+func (boolBuildSettingFlagType) emitShortNameParser(string, string, string) {
+	panic("boolean build settings cannot use short names")
+}
+func (boolBuildSettingFlagType) emitStartupParser(string) {
+	panic("boolean build settings cannot be startup flags")
+}
+func (boolBuildSettingFlagType) emitLongNameParser(flagSetName, longName string) {
+	fmt.Printf("case %#v:\n", "--"+longName)
+	fmt.Printf("  if cmd.get%sFlags() == nil {\n", toSymbolName(flagSetName, true))
+	fmt.Printf("    if mustApply { return FlagNotApplicableError{Flag: longOptionName} }\n")
+	fmt.Printf("    break\n")
+	fmt.Printf("  }\n")
+	fmt.Printf("  value := true\n")
+	fmt.Printf("  if err := parseBool(assignmentIndex >= 0, optionValue, &value, longOptionName); err != nil { return err }\n")
+	fmt.Printf("  valueString := \"false\"; if value { valueString = \"true\" }\n")
+	fmt.Printf("  cmd.appendBuildSettingOverride(BuildSettingOverride{Label: %#v, Value: valueString})\n", "@bazel_tools//command_line_option:"+longName)
+	fmt.Printf("case %#v:\n", "--no"+longName)
+	fmt.Printf("  if cmd.get%sFlags() == nil {\n", toSymbolName(flagSetName, true))
+	fmt.Printf("    break\n")
+	fmt.Printf("  }\n")
+	fmt.Printf("  if assignmentIndex >= 0 { return FlagUnexpectedValueError{Flag: longOptionName} }\n")
+	fmt.Printf("  cmd.appendBuildSettingOverride(BuildSettingOverride{Label: %#v, Value: \"false\"})\n", "@bazel_tools//command_line_option:"+longName)
+}
+
 type buildSettingFlagType struct{}
 
 func (buildSettingFlagType) emitStructField(longName string) {}

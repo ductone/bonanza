@@ -207,10 +207,11 @@ type Outcome struct {
 	FileAccessParameters      *model_filesystem.FileAccessParameters
 	OutcomesReference         model_core.Decodable[object.LocalReference]
 
-	// The canonicalized target patterns and configurations that the
-	// BuildResult key of this build contains.
+	// The canonicalized target patterns, configurations and output groups
+	// used in the BuildResult key of this build.
 	TargetPatterns []string
 	Configurations []*model_analysis_pb.BuildResult_Key_Configuration
+	OutputGroups   []string
 
 	buildFlags    *arguments.BuildFlags
 	workspacePath path.Parser
@@ -284,6 +285,16 @@ func PerformBuild(
 	logger := logging.NewLoggerFromFlags(commonFlags)
 	commands.ValidateInsideWorkspace(logger, commandName, workspacePath)
 	targetPatternArguments, err := ResolveTargetPatterns(targetPatternArguments, buildFlags.TargetPatternFile)
+	if err != nil {
+		logger.Fatal(formatted.Text(err.Error()))
+	}
+
+	stableStatus, volatileStatus, err := currentWorkspaceStatus(buildSettingOverrides, buildFlags.EmbedLabel)
+	if err != nil {
+		logger.Fatal(formatted.Textf("Failed to create workspace status: %s", err))
+	}
+
+	outputGroups, err := parseOutputGroups(buildFlags.OutputGroups)
 	if err != nil {
 		logger.Fatal(formatted.Text(err.Error()))
 	}
@@ -654,6 +665,8 @@ func PerformBuild(
 		SubruleImplementationWrapperIdentifier: commonFlags.SubruleImplementationWrapperIdentifier,
 		ModuleRegistryUrls:                     registryURLs,
 		StrictVendorMode:                       strictVendorMode,
+		StableWorkspaceStatus:                  stableStatus,
+		VolatileWorkspaceStatus:                volatileStatus,
 	}
 	buildSpecification.ActionEnv, err = resolveEnvironmentOverrides(buildFlags.ActionEnv, os.LookupEnv)
 	if err != nil {
@@ -914,6 +927,7 @@ func PerformBuild(
 		&model_analysis_pb.BuildResult_Key{
 			TargetPatterns: targetPatterns,
 			Configurations: configurations,
+			OutputGroups:   outputGroups,
 		},
 	)
 	buildResultKey, _ := patchedBuildResultKey.SortAndSetReferences()
@@ -1269,6 +1283,7 @@ func PerformBuild(
 
 		TargetPatterns: targetPatterns,
 		Configurations: configurations,
+		OutputGroups:   outputGroups,
 
 		buildFlags:    buildFlags,
 		workspacePath: workspacePath,
@@ -1294,6 +1309,7 @@ func DoBuild(args *arguments.BuildCommand, workspacePath path.Parser) {
 	buildResultValue, err := LookUpValue[model_analysis_pb.BuildResult_Value](o, &model_analysis_pb.BuildResult_Key{
 		TargetPatterns: o.TargetPatterns,
 		Configurations: o.Configurations,
+		OutputGroups:   o.OutputGroups,
 	})
 	if err != nil {
 		o.Logger.Fatal(formatted.Textf("Failed to look up build result: %s", err))
