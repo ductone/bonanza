@@ -114,7 +114,7 @@ func (c *client) UploadBlob(ctx context.Context, digest *remoteexecution.Digest,
 			}
 			written += int64(n)
 			if err := stream.Send(request); err != nil {
-				return c.closeUploadWithError(stream, cancel, fmt.Errorf("write REAPI blob %s/%d: %w", digest.Hash, digest.SizeBytes, err))
+				return c.closeUploadAfterSendError(stream, cancel, digest, fmt.Errorf("write REAPI blob %s/%d: %w", digest.Hash, digest.SizeBytes, err))
 			}
 		}
 		if readErr == io.EOF {
@@ -129,7 +129,7 @@ func (c *client) UploadBlob(ctx context.Context, digest *remoteexecution.Digest,
 				finish.ResourceName = resourceName
 			}
 			if err := stream.Send(finish); err != nil {
-				return c.closeUploadWithError(stream, cancel, fmt.Errorf("finish REAPI blob upload %s/%d: %w", digest.Hash, digest.SizeBytes, err))
+				return c.closeUploadAfterSendError(stream, cancel, digest, fmt.Errorf("finish REAPI blob upload %s/%d: %w", digest.Hash, digest.SizeBytes, err))
 			}
 			response, err := stream.CloseAndRecv()
 			if err != nil {
@@ -265,8 +265,8 @@ func (c *client) Execute(ctx context.Context, request *remoteexecution.ExecuteRe
 		if !operation.GetDone() {
 			continue
 		}
-		if operation.GetError() != nil {
-			return nil, status.Error(codes.Code(operation.GetError().Code), operation.GetError().Message)
+		if operationError := operation.GetError(); operationError != nil {
+			return nil, terminalOperationError(operationError.Code, operationError.Message)
 		}
 		responseAny := operation.GetResponse()
 		if responseAny == nil {
@@ -301,6 +301,34 @@ func (c *client) closeUploadWithError(stream bytestream.ByteStream_WriteClient, 
 	cancel()
 	_, _ = stream.CloseAndRecv()
 	return cause
+}
+
+// REAPI permits a concurrent uploader to complete the same blob mid-stream.
+// A full committed size proves the requested blob is already present.
+func (c *client) closeUploadAfterSendError(
+	stream bytestream.ByteStream_WriteClient,
+	cancel context.CancelFunc,
+	digest *remoteexecution.Digest,
+	cause error,
+) error {
+	response, err := stream.CloseAndRecv()
+	cancel()
+	if err != nil {
+		return fmt.Errorf("confirm REAPI blob upload %s/%d after send failure (%v): %w", digest.Hash, digest.SizeBytes, cause, err)
+	}
+	if response == nil || response.CommittedSize != digest.SizeBytes {
+		return status.Errorf(codes.DataLoss, "REAPI server committed an unexpected size for blob %s/%d", digest.Hash, digest.SizeBytes)
+	}
+	return nil
+}
+
+// An Operation error status must be non-OK. status.Error would turn an OK
+// status into nil, silently accepting a malformed terminal operation.
+func terminalOperationError(code int32, message string) error {
+	if code == int32(codes.OK) {
+		return status.Error(codes.Internal, "REAPI completed operation has an OK error status")
+	}
+	return status.Error(codes.Code(code), message)
 }
 
 func containsDigest(digests []*remoteexecution.Digest, expected *remoteexecution.Digest) bool {

@@ -49,6 +49,7 @@ go_test(
     embed = [":reapi"],
     deps = [
         "//pkg/model/filesystem",
+        "//pkg/proto/model/command",
         "//pkg/proto/model/filesystem",
         "//pkg/proto/storage/object",
         "//pkg/storage/object",

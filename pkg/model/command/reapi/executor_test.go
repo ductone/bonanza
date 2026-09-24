@@ -8,6 +8,7 @@ import (
 	"time"
 
 	model_filesystem "bonanza.build/pkg/model/filesystem"
+	model_command_pb "bonanza.build/pkg/proto/model/command"
 	model_filesystem_pb "bonanza.build/pkg/proto/model/filesystem"
 	object_pb "bonanza.build/pkg/proto/storage/object"
 	"bonanza.build/pkg/storage/object"
@@ -165,5 +166,42 @@ func TestNormalizeWorkingDirectoryRootAndTraversal(t *testing.T) {
 	_, _, err = normalizeWorkingDirectory("../escape")
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("escaping working directory error = %v; want Unimplemented", err)
+	}
+}
+
+func TestValidateStatelessCommandRejectsRepositoryActionWithoutIdentityBoundBroker(t *testing.T) {
+	t.Parallel()
+
+	for name, command := range map[string]*model_command_pb.Command{
+		"WritableInputFiles": {
+			NeedsWritableInputFiles: true,
+		},
+		"StableInputRoot": {
+			StableInputRootPathUuid: "c6add83b-eeae-4755-9dde-68ad80fed342",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateStatelessCommand(command)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("validateStatelessCommand() error = %v; want FailedPrecondition", err)
+			}
+		})
+	}
+}
+
+func TestNewExecutorRejectsReservedTestQueue(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewExecutor(
+		nil,
+		semaphore.NewWeighted(1),
+		nil,
+		nil,
+		semaphore.NewWeighted(1),
+		&fakeREAPIClient{},
+		Configuration{Queue: "test"},
+	)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("NewExecutor() error = %v; want InvalidArgument", err)
 	}
 }

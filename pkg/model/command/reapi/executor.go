@@ -117,6 +117,22 @@ func NewExecutor(
 	}, nil
 }
 
+// validateStatelessCommand rejects command features whose semantics require the
+// repository-action execution boundary. REv2 does not preserve either writable
+// input inodes or a stable absolute input-root path. More importantly, this
+// worker has no identity-bound, isolated credential broker, so forwarding such
+// an action would risk executing it with another worker's credentials.
+//
+// Call this before flattening the command environment or uploading any REv2
+// input. Repository credentials must never enter a content-addressed object,
+// Action, Command, result, or log.
+func validateStatelessCommand(command *model_command_pb.Command) error {
+	if command.GetNeedsWritableInputFiles() || command.GetStableInputRootPathUuid() != "" {
+		return status.Error(codes.FailedPrecondition, "stateful repository action requires an isolated native worker with a verified identity-bound credential broker")
+	}
+	return nil
+}
+
 func (e *executor) CheckReadiness(ctx context.Context) error {
 	if err := e.client.CheckReadiness(ctx); err != nil {
 		return fmt.Errorf("REAPI backend is not ready: %w", err)
@@ -183,12 +199,8 @@ func (e *executor) Execute(
 			return result
 		}
 
-		if command.Message.NeedsWritableInputFiles {
-			setError(status.Error(codes.Unimplemented, "REAPI backend does not support writable Bonanza input files"))
-			return result
-		}
-		if command.Message.StableInputRootPathUuid != "" {
-			setError(status.Error(codes.Unimplemented, "REAPI backend does not support stable Bonanza input-root paths"))
+		if err := validateStatelessCommand(command.Message); err != nil {
+			setError(err)
 			return result
 		}
 		if executionTimeout <= 0 {
