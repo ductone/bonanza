@@ -177,6 +177,16 @@ go_test(
 )
 
 go_test(
+    name = "test_result_test",
+    srcs = ["test_result_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/model/core",
+        "//pkg/proto/model/starlark",
+    ],
+)
+
+go_test(
     name = "analysis_test",
     srcs = [
         "base_computer_test.go",

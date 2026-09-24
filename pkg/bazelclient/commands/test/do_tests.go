@@ -86,6 +86,10 @@ func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 	logPrinter := newTestLogPrinter(o)
 	failed := 0
 	for _, test := range tests {
+		name := test.Label
+		if test.ShardCount > 1 {
+			name = fmt.Sprintf("%s (shard %d/%d)", test.Label, test.ShardIndex+1, test.ShardCount)
+		}
 		passed := test.Status == model_analysis_pb.TestStatus_TEST_STATUS_PASSED
 		if !passed {
 			failed++
@@ -94,21 +98,21 @@ func DoTest(args *arguments.TestCommand, workspacePath path.Parser) {
 		if args.TestFlags.TestOutput == arguments.TestOutput_All ||
 			(args.TestFlags.TestOutput == arguments.TestOutput_Errors && !passed) {
 			if err := logPrinter.print(model_core.Nested(testResult, test.OutputsReference)); err != nil {
-				logger.Error(formatted.Textf("Failed to print log of test %#v: %s", test.Label, err))
+				logger.Error(formatted.Textf("Failed to print log of test %s: %s", name, err))
 			}
 		}
 
 		if passed {
 			logger.Info(
 				formatted.Join(
-					formatted.Textf("%s  ", test.Label),
+					formatted.Textf("%s  ", name),
 					formatted.Green(formatted.Text("PASSED")),
 				),
 			)
 		} else {
 			logger.Info(
 				formatted.Join(
-					formatted.Textf("%s  ", test.Label),
+					formatted.Textf("%s  ", name),
 					formatted.Red(formatted.Textf("FAILED (exit code %d)", test.ExitCode)),
 				),
 			)

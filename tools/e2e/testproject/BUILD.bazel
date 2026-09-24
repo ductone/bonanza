@@ -309,6 +309,47 @@ shell_test(
     expected_filter = "OnlyThis",
 )
 
+shell_test(
+    name = "sharded_test",
+    check_runfile = True,
+    data = ["action_edges_template.txt"],
+    failure_shard = 1,
+    shard_count = 2,
+)
+
+shell_test(
+    name = "missing_shard_status_test",
+    shard_count = 2,
+    write_shard_status = False,
+)
+
+shell_test(
+    name = "excluded_test",
+    exit_code = 1,
+    tags = ["integration"],
+)
+
+shell_test(
+    name = "unsupported_local_test",
+    tags = ["local"],
+)
+
+constraint_setting(name = "test_execution_requirement")
+constraint_value(
+    name = "unregistered_test_execution_platform",
+    constraint_setting = ":test_execution_requirement",
+)
+
+shell_test(
+    name = "unschedulable_test",
+    exec_compatible_with = [":unregistered_test_execution_platform"],
+)
+
+test_suite(
+    name = "sharded_suite",
+    tests = [":passing_test", ":sharded_test"],
+)
+
 # Exercises "bonanza_bazel run": the executable is a symlink that the
 # builder materializes on its own, and the runfiles consist of a source
 # file, so launching this target needs no worker.
