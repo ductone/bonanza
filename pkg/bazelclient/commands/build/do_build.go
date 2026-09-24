@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"bonanza.build/pkg/bazelclient/arguments"
 	"bonanza.build/pkg/bazelclient/commands"
@@ -71,31 +73,20 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.ClientConn, error) {
-	endpointURL, err := url.Parse(endpoint)
+func newGRPCClient(endpoint string) (*grpc.ClientConn, error) {
+	target, tls, err := arguments.ParseBonanzaEndpoint(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+		return nil, err
 	}
-
-	var target string
 	var clientCredentials credentials.TransportCredentials
-	switch scheme := endpointURL.Scheme; scheme {
-	case "grpc":
-		target = endpointURL.Host
-		clientCredentials = insecure.NewCredentials()
-	case "grpcs":
-		target = endpointURL.Host
+	if tls {
 		clientCredentials, err = advancedtls.NewClientCreds(&advancedtls.Options{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create TLS client credentials: %w", err)
 		}
-	case "unix":
-		target = endpoint
+	} else {
 		clientCredentials = insecure.NewCredentials()
-	default:
-		return nil, errors.New("scheme is not supported")
 	}
-
 	return grpc.NewClient(target, grpc.WithTransportCredentials(clientCredentials))
 }
 
@@ -288,7 +279,7 @@ func PerformBuild(
 		logger.Fatal(formatted.Text(err.Error()))
 	}
 
-	remoteCacheClient, err := newGRPCClient(commonFlags.RemoteCache, commonFlags)
+	remoteCacheClient, err := newGRPCClient(commonFlags.RemoteCache)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", commonFlags.RemoteCache, err))
 	}
@@ -1022,7 +1013,7 @@ func PerformBuild(
 		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", commonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 
-	remoteExecutorClient, err := newGRPCClient(commonFlags.RemoteExecutor, commonFlags)
+	remoteExecutorClient, err := newGRPCClient(commonFlags.RemoteExecutor)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", commonFlags.RemoteExecutor, err))
 	}
@@ -1113,6 +1104,9 @@ func PerformBuild(
 		),
 	)
 	progressLinesWritten := 0
+	progressRateSeconds, _ := strconv.ParseFloat(commonFlags.ShowProgressRateLimit, 64) // Validated by argument parsing.
+	progressInterval := time.Duration(progressRateSeconds * float64(time.Second))
+	var lastProgress time.Time
 	for progressReference := range builderClient.RunAction(
 		context.Background(),
 		builderECDHPublicKey,
@@ -1130,6 +1124,11 @@ func PerformBuild(
 		&resultReference,
 		&errBuild,
 	) {
+		if now := time.Now(); !lastProgress.IsZero() && now.Sub(lastProgress) < progressInterval {
+			continue
+		} else {
+			lastProgress = now
+		}
 		progress, err := progressReader.ReadObject(context.Background(), progressReference)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Failed to read progress message: %s", err))

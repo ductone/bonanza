@@ -55,16 +55,10 @@ func TestParseCommandAndArguments(t *testing.T) {
 
 		t.Run("ModuleFlagAliases", func(t *testing.T) {
 			command, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
-				"build",
-				"--incompatible_default_to_explicit_init_py",
-				"--noincompatible_default_to_explicit_init_py",
-				"--string_alias=value",
-				"//...",
+				"build", "--string_alias=value", "//...",
 			})
 			require.NoError(t, err)
 			require.Equal(t, []arguments.BuildSettingOverride{
-				{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
-				{Label: "noincompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
 				{Label: "string_alias", Value: "value", IsAlias: true, HasExplicitValue: true},
 			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
 		})
@@ -643,14 +637,11 @@ func TestQueryOutputFlagIsScopedToQueryCommands(t *testing.T) {
 	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_LabelKind), query.(*arguments.QueryCommand).QueryFlags.Output)
 
 	cquery, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
-		"cquery", "--output=files", "--platforms=//platforms:exec", "--incompatible_default_to_explicit_init_py", "set(//pkg:target)",
+		"cquery", "--output=files", "--platforms=//platforms:exec", "set(//pkg:target)",
 	})
 	require.NoError(t, err)
 	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_Files), cquery.(*arguments.CqueryCommand).CqueryFlags.Output)
 	require.Equal(t, "//platforms:exec", cquery.(*arguments.CqueryCommand).BuildFlags.Platforms)
-	require.Equal(t, []arguments.BuildSettingOverride{
-		{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
-	}, cquery.(*arguments.CqueryCommand).BuildSettingOverrides)
 
 	_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
 		"build", "--output=files", "//pkg:target",
@@ -675,4 +666,85 @@ func TestC1EnvironmentFlagsAndConfigExpansion(t *testing.T) {
 	require.NotContains(t, cquery.RCAnnouncements, "build:ci: --action_env=DO_NOT_TRACK=2")
 	require.Contains(t, cquery.RCAnnouncements, "build: --repo_env=DO_NOT_TRACK=<redacted>")
 	require.Contains(t, cquery.RCAnnouncements, "common:ci: --color=no")
+}
+
+func TestC1InvocationPrecedenceAndProtocol(t *testing.T) {
+	rc := arguments.ConfigurationDirectives{
+		"common":              {{"--curses"}, {"--show_progress_rate_limit=5"}},
+		"common:remote-cache": {{"--remote_cache=grpc://bb-control-plane.cache.svc.cluster.local:8980"}},
+		"build":               {{"--show_timestamps"}},
+	}
+	_, err := arguments.ParseCommandAndArguments(rc, []string{"build", "--config=remote-cache", "//:target"})
+	require.ErrorContains(t, err, "--remote_cache")
+	require.ErrorContains(t, err, "Bazel REAPI/HTTP")
+
+	cmd, err := arguments.ParseCommandAndArguments(rc, []string{
+		"build", "--config=remote-cache",
+		"--remote_cache=bonanza+grpcs://storage.example:443",
+		"--remote_executor=bonanza+grpcs://scheduler.example:443",
+		"--nocurses", "--show_progress_rate_limit=0", "--noshow_timestamps", "//:target",
+	})
+	require.NoError(t, err)
+	flags := cmd.(*arguments.BuildCommand).CommonFlags
+	require.Equal(t, "bonanza+grpcs://storage.example:443", flags.RemoteCache)
+	require.Equal(t, "bonanza+grpcs://scheduler.example:443", flags.RemoteExecutor)
+	require.False(t, flags.Curses)
+	require.False(t, flags.ShowTimestamps)
+	require.Equal(t, "0", flags.ShowProgressRateLimit)
+}
+
+func TestBonanzaEndpointProtocols(t *testing.T) {
+	for _, test := range []struct {
+		endpoint string
+		target   string
+		tls      bool
+	}{
+		{"bonanza+grpc://storage.example:8980", "storage.example:8980", false},
+		{"bonanza+grpcs://scheduler.example:443", "scheduler.example:443", true},
+		{"bonanza+unix:///run/bonanza/storage.sock", "unix:///run/bonanza/storage.sock", false},
+	} {
+		target, tls, err := arguments.ParseBonanzaEndpoint(test.endpoint)
+		require.NoError(t, err)
+		require.Equal(t, test.target, target)
+		require.Equal(t, test.tls, tls)
+	}
+	for _, endpoint := range []string{
+		"grpc://bb-control-plane.cache.svc.cluster.local:8980",
+		"http://localhost:9095",
+		"unix:///run/bonanza/storage.sock",
+		"bonanza+unix://host/run/storage.sock",
+		"bonanza+grpc://storage.example:8980/path",
+		"bonanza+grpcs://user:password@scheduler.example:443",
+		"bonanza+grpc://storage.example:0",
+		"bonanza+grpc://storage.example:65536",
+		"bonanza+grpc://storage.example",
+	} {
+		_, _, err := arguments.ParseBonanzaEndpoint(endpoint)
+		require.Error(t, err, endpoint)
+		require.NotContains(t, err.Error(), "password")
+	}
+}
+
+func TestC1UnsupportedFlagsAreNotModuleAliases(t *testing.T) {
+	for _, flag := range []string{
+		"--verbose_failures", "--experimental_ui_max_stdouterr_bytes=-1",
+		"--show_result=20", "--test_summary=detailed",
+		"--incompatible_default_to_explicit_init_py",
+		"--remote_upload_local_results=true", "--remote_timeout=30", "--remote_retries=2",
+		"--remote_default_exec_properties=c1.queue=small",
+		"--remote_download_minimal", "--jobs=100",
+	} {
+		_, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{"build", flag, "//:target"})
+		require.ErrorContains(t, err, "unsupported", flag)
+	}
+}
+
+func TestInvalidProgressRateLimitRejectsBothRcAndCLI(t *testing.T) {
+	for _, rate := range []string{"-1", "NaN", "Inf", "not-a-number"} {
+		_, err := arguments.ParseCommandAndArguments(
+			arguments.ConfigurationDirectives{"common": {{"--show_progress_rate_limit=5"}}},
+			[]string{"build", "--show_progress_rate_limit=" + rate},
+		)
+		require.ErrorContains(t, err, "--show_progress_rate_limit")
+	}
 }

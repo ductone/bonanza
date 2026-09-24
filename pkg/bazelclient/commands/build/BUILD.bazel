@@ -84,6 +84,7 @@ go_test(
         "//pkg/bazelclient/logging",
         "//pkg/label",
         "//pkg/model/core",
+        "//pkg/proto/model/analysis",
         "//pkg/proto/model/filesystem",
         "//pkg/storage/object",
         "@com_github_buildbarn_bb_storage//pkg/filesystem",

@@ -97,8 +97,8 @@ PROJECT="$RUN_DIR/testproject"
 rm -rf "$PROJECT"
 cp -r "$REPO/tools/e2e/testproject" "$PROJECT"
 cat > "$PROJECT/.bazelrc" <<EOF
-common:bonanza --remote_cache=unix://$RUN_DIR/bonanza_demo/bonanza_storage_frontend.sock
-common:bonanza --remote_executor=unix://$RUN_DIR/bonanza_demo/bonanza_scheduler_clients.sock
+common:bonanza --remote_cache=bonanza+unix://$RUN_DIR/bonanza_demo/bonanza_storage_frontend.sock
+common:bonanza --remote_executor=bonanza+unix://$RUN_DIR/bonanza_demo/bonanza_scheduler_clients.sock
 common:bonanza --remote_encryption_key=U3YDUwfejfiRDeD4aqoR7A==
 common:bonanza --remote_executor_builder_pkix_public_key=MCowBQYDK2VuAyEAE+onXE9lGj+1ykKMdYJ7ORbbGvDg6mXwX9H90afmdDI=
 common:bonanza --remote_executor_fetcher_pkix_public_key=MCowBQYDK2VuAyEA4TFZl07r2DStbhdLuI3C6zU36syOXo0K9WXFOthelW4=

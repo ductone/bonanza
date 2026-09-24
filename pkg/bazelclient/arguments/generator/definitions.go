@@ -85,6 +85,13 @@ var commonFlags = []flag{
 		flagType:    boolFlagType{},
 	},
 	{
+		longName:    "curses",
+		description: "Redraw progress in place on a terminal. --nocurses preserves each progress update as a log line.",
+		flagType: boolFlagType{
+			defaultValue: true,
+		},
+	},
+	{
 		longName:    "browser_url",
 		description: "URL at which the Bonanza Browser service is hosted. This causes command line output to contain clickable links to the Bonanza Browser service.",
 		flagType:    stringFlagType{},
@@ -138,8 +145,20 @@ var commonFlags = []flag{
 		flagType:    stringListFlagType{},
 	},
 	{
+		longName:    "show_progress_rate_limit",
+		description: "Minimum seconds between progress displays; zero shows every update.",
+		flagType: stringFlagType{
+			defaultValue: "0.2",
+		},
+	},
+	{
+		longName:    "show_timestamps",
+		description: "Prefix Bonanza log messages with the current timestamp.",
+		flagType:    boolFlagType{},
+	},
+	{
 		longName:    "remote_cache",
-		description: "A URI of a bonanza_storage_frontend endpoint. The supported schemas are grpc, grpcs (grpc with TLS enabled) and unix (local UNIX sockets). Specify grpc:// or unix: schema to disable TLS.",
+		description: "URI of a Bonanza storage frontend, using bonanza+grpc://, bonanza+grpcs:// or bonanza+unix:/// (not Bazel's REAPI or HTTP cache).",
 		flagType:    stringFlagType{},
 	},
 	{
@@ -156,7 +175,7 @@ var commonFlags = []flag{
 	},
 	{
 		longName:    "remote_executor",
-		description: "A URI of a bonanza_scheduler endpoint. The supported schemas are grpc, grpcs (grpc with TLS enabled) and unix (local UNIX sockets). Specify grpc:// or unix: schema to disable TLS.",
+		description: "URI of a Bonanza scheduler, using bonanza+grpc://, bonanza+grpcs:// or bonanza+unix:/// (not Bazel's REAPI executor).",
 		flagType:    stringFlagType{},
 	},
 	{
