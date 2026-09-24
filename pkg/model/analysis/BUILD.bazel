@@ -147,6 +147,12 @@ go_library(
 )
 
 go_test(
+    name = "action_compatibility_test",
+    srcs = ["action_compatibility_test.go"],
+    embed = [":analysis"],
+)
+
+go_test(
     name = "configured_query_test",
     srcs = ["configured_query_result_test.go"],
     embed = [":analysis"],

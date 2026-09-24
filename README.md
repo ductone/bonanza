@@ -130,6 +130,16 @@ input-root paths are not supported by this backend; use a native
 Bonanza worker for those actions. Bonanza still requires its own
 scheduler and object store, and has no Build Event Protocol.
 
+`ctx.actions.run()` and `run_shell()` fail analysis when an action requires
+local, exclusive, unsandboxed, or uncached execution, whether specified as
+an execution requirement or a rule tag. `use_default_shell_env` is also
+rejected until host environment propagation is implemented. C1's
+source-tree image archiver, for example, requires a local unsandboxed
+action and cannot safely run on the current remote worker. Test-rule tags
+and `bazel run` targets have separate execution paths. No `rules_img`
+image digest or publication parity is claimed without an isolated Bonanza
+worker and a complete C1 graph canary.
+
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test
 is a result rather than a build failure: the client reports it and exits
