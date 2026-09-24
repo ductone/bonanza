@@ -226,9 +226,10 @@ func (baseComputer[TReference, TMetadata]) ComputeModuleDotBazelContentsValue(ct
 	expectedNameStr := expectedName.String()
 	expectedVersion, hasVersion := moduleInstance.GetModuleVersion()
 
-	// Check to see if there is an override for this module, and if it has been loaded.
 	moduleOverrides := e.GetModulesWithOverridesValue(&model_analysis_pb.ModulesWithOverrides_Key{})
-	if !moduleOverrides.IsSet() {
+	buildSpecification := e.GetBuildSpecificationValue(&model_analysis_pb.BuildSpecification_Key{})
+	directoryReaders, gotDirectoryReaders := e.GetDirectoryReadersValue(&model_analysis_pb.DirectoryReaders_Key{})
+	if !moduleOverrides.IsSet() || !buildSpecification.IsSet() || !gotDirectoryReaders {
 		return PatchedModuleDotBazelContentsValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
 
@@ -291,6 +292,32 @@ func (baseComputer[TReference, TMetadata]) ComputeModuleDotBazelContentsValue(ct
 			return PatchedModuleDotBazelContentsValue[TMetadata]{}, fmt.Errorf("invalid version %#v for module %#v: %w", foundModule.Version, foundModule.Name, err)
 		}
 		if !hasVersion || expectedVersion.Compare(foundVersion) == 0 {
+			if registry, ok := findVendoredRegistry(buildSpecification.Message, foundModule.RegistryUrl); ok {
+				relativeModulePath := strings.Join([]string{
+					"modules",
+					expectedName.String(),
+					foundVersion.String(),
+					moduleDotBazelFilename,
+				}, "/")
+				vendoredContents, verified, err := readVerifiedVendoredRegistryFile(ctx, buildSpecification, registry, directoryReaders, relativeModulePath)
+				if err != nil {
+					return PatchedModuleDotBazelContentsValue[TMetadata]{}, fmt.Errorf("read vendored MODULE.bazel for module %s with version %s: %w", expectedName, foundVersion, err)
+				}
+				if verified {
+					if !vendoredContents.IsSet() {
+						return PatchedModuleDotBazelContentsValue[TMetadata]{}, fmt.Errorf("vendored registry mirror is missing MODULE.bazel for module %s with version %s", expectedName, foundVersion)
+					}
+					fileContents := model_core.Patch(e, vendoredContents)
+					return model_core.NewPatchedMessage(
+						&model_analysis_pb.ModuleDotBazelContents_Value{Contents: fileContents.Message},
+						fileContents.Patcher,
+					), nil
+				}
+			}
+			if buildSpecification.Message.StrictVendorMode {
+				return PatchedModuleDotBazelContentsValue[TMetadata]{}, fmt.Errorf("module %s with version %s is absent from the lockfile-verified vendor registry mirror", expectedName, foundVersion)
+			}
+
 			moduleFileURL, err := getModuleDotBazelURL(foundModule.RegistryUrl, expectedName, foundVersion)
 			if err != nil {
 				return PatchedModuleDotBazelContentsValue[TMetadata]{}, fmt.Errorf("failed to construct URL for module %s with version %s in registry %#v: %s", foundModule.Name, foundModule.Version, foundModule.RegistryUrl)

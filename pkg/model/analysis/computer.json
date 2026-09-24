@@ -157,6 +157,21 @@
          ],
          "keyContainsReferences": true
       },
+      "ConfiguredQueryResult": {
+         "dependsOn": [
+            "BuildSpecification",
+            "BuiltinsModuleNames",
+            "CanonicalRepoName",
+            "CompiledBzlFileDecodedGlobals",
+            "CompiledBzlFileFunctionFactory",
+            "CompiledBzlFileGlobal",
+            "QueryResult",
+            "RootModule",
+            "Target",
+            "TargetProvider",
+            "VisibleTarget"
+         ]
+      },
       "ConfiguredTarget": {
          "dependsOn": [
             "ActionEncoderObject",
@@ -316,7 +331,8 @@
       "Glob": {
          "dependsOn": [
             "DirectoryReaders",
-            "FilesInPackage"
+            "FilesInPackage",
+            "RepoDefaultAttrs"
          ]
       },
       "HTTPArchiveContents": {
@@ -339,6 +355,8 @@
       },
       "ModuleDotBazelContents": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileProperties",
             "HTTPFileContents",
             "ModuleFinalBuildList",
@@ -403,6 +421,8 @@
       },
       "ModuleRoughBuildList": {
          "dependsOn": [
+            "BuildSpecification",
+            "DirectoryReaders",
             "FileReader",
             "HTTPFileContents",
             "ModuleDotBazelContents",
@@ -465,7 +485,8 @@
       "PackagesAtAndBelow": {
          "dependsOn": [
             "DirectoryReaders",
-            "Repo"
+            "Repo",
+            "RepoDefaultAttrs"
          ]
       },
       "QueryResult": {

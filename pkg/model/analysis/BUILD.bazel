@@ -25,6 +25,7 @@ go_library(
         "completed_action_result.go",
         "computer.go",
         "configured_aspect.go",
+        "configured_query_result.go",
         "configured_target.go",
         "directory_creation_parameters.go",
         "directory_readers.go",
@@ -38,6 +39,7 @@ go_library(
         "files_in_package.go",
         "files_root.go",
         "glob.go",
+        "ignored_directories.go",
         "http_archive_contents.go",
         "http_file_contents.go",
         "module_dot_bazel_contents.go",
@@ -90,6 +92,7 @@ go_library(
         "used_module_extension.go",
         "used_module_extensions.go",
         "user_defined_transition.go",
+        "vendored_registry.go",
         "visible_target.go",
     ],
     importpath = "bonanza.build/pkg/model/analysis",
@@ -140,6 +143,36 @@ go_library(
         "@org_golang_google_protobuf//types/known/wrapperspb",
         "@org_golang_x_sync//errgroup",
         "@org_golang_x_sync//semaphore",
+    ],
+)
+
+go_test(
+    name = "configured_query_test",
+    srcs = ["configured_query_result_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/proto/model/analysis",
+        "@com_github_stretchr_testify//require",
+    ],
+)
+
+go_test(
+    name = "ignored_directories_test",
+    srcs = ["ignored_directories_test.go"],
+    embed = [":analysis"],
+    deps = ["@com_github_stretchr_testify//require"],
+)
+
+go_test(
+    name = "repo_vendored_test",
+    srcs = ["repo_vendored_test.go"],
+    embed = [":analysis"],
+    deps = [
+        "//pkg/model/core",
+        "//pkg/proto/model/analysis",
+        "//pkg/proto/model/filesystem",
+        "//pkg/storage/object",
+        "@com_github_stretchr_testify//require",
     ],
 )
 

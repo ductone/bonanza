@@ -33,6 +33,7 @@ var enumTypes = map[string][]string{
 	"QueryOutput": {
 		"label",
 		"label_kind",
+		"files",
 	},
 	"TestOutput": {
 		"summary",
@@ -184,15 +185,49 @@ var commonFlags = []flag{
 		flagType:    stringFlagType{},
 	},
 	{
+		longName:    "respect_gitignore",
+		description: "If true, files and directories that are ignored by Git (via .gitignore, .git/info/exclude, or the global excludes file) are excluded from the module source tree that gets uploaded to the remote cache, for any module whose root directory is itself the top level of a Git working tree. This has no effect on modules that aren't Git working trees, such as most vendored/extracted dependencies. Disable this if a module relies on a Git-ignored file also being a build input.",
+		flagType: boolFlagType{
+			defaultValue: true,
+		},
+	},
+	{
+		longName:    "require_gitignore",
+		description: "Fail before uploading any module source if the root module's Git ignore rules cannot be read. Use when the checkout contains ignored local credentials.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
 		longName:    "rule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of rule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
+	},
+	{
+		longName:    "strict_module_resolution",
+		description: "If true, never fall back to the default Bazel Central Registry when --registry is unset. A module not available through a local_path_override() or --override_module then fails resolution instead of being fetched.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
+	},
+	{
+		longName:    "strict_vendor",
+		description: "With --vendor_dir, reject any repository that is absent from the validated vendor snapshot instead of evaluating its normal repository rule.",
+		flagType: boolFlagType{
+			defaultValue: false,
+		},
 	},
 	{
 		longName:    "subrule_implementation_wrapper_identifier",
 		description: "Name of the Starlark function to invoke to wrap the execution of subrule implementation functions. This can be used to decorate ctx to contain fields that are either deprecated, or trivially implementable in pure Starlark.",
 		flagType:    stringFlagType{},
 	},
+	{
+		longName:    "vendor_dir",
+		description: "Path to a Bazel vendor directory. Relative paths are resolved against the workspace root. Bonanza requires --lockfile_mode=error and validates marker files and MODULE.bazel.lock registry hashes. Repositories outside the snapshot use normal resolution unless --strict_vendor is set.",
+		flagType:    stringFlagType{},
+	},
+
 	{
 		longName:    "xcode_version",
 		description: "If specified, uses Xcode of the given version for relevant build actions. If unspecified, uses the executor default version of Xcode.",
@@ -228,6 +263,11 @@ var commands = map[string]command{
 				flagType:    stringFlagType{},
 			},
 			{
+				longName:    "target_pattern_file",
+				description: "Read newline-separated target patterns from this file instead of the command line. Supplying both is an error.",
+				flagType:    stringFlagType{},
+			},
+			{
 				longName:    "symlink_prefix",
 				description: "The prefix that is prepended to any of the convenience symbolic links that are created after a build. Setting it to \"/\" causes no symbolic links to be created.",
 				flagType: stringFlagType{
@@ -235,6 +275,18 @@ var commands = map[string]command{
 				},
 			},
 		},
+		takesArguments: true,
+	},
+	"cquery": {
+		ancestor: "build",
+		flags: []flag{{
+			longName:    "output",
+			description: "Print configured target labels, rule kinds and labels, or default output file paths.",
+			flagType: enumFlagType{
+				enumType:     "QueryOutput",
+				defaultValue: "label",
+			},
+		}},
 		takesArguments: true,
 	},
 	"clean": {

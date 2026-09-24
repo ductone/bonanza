@@ -4,8 +4,12 @@ go_library(
     name = "build",
     srcs = [
         "do_build.go",
+        "flag_aliases.go",
         "local_path_extracting_module_dot_bazel_handler.go",
         "materialize_output_root.go",
+        "path_utils.go",
+        "source_exclusions.go",
+        "vendor.go",
     ],
     importpath = "bonanza.build/pkg/bazelclient/commands/build",
     visibility = ["//visibility:public"],
@@ -44,6 +48,7 @@ go_library(
         "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
         "@com_github_buildbarn_bb_storage//pkg/util",
         "@net_starlark_go//starlark",
+        "@net_starlark_go//syntax",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials",
         "@org_golang_google_grpc//credentials/insecure",
@@ -64,9 +69,19 @@ go_library(
 
 go_test(
     name = "build_test",
-    srcs = ["materialize_output_root_test.go"],
+    srcs = [
+        "flag_aliases_test.go",
+        "materialize_output_root_test.go",
+        "source_exclusions_test.go",
+        "target_pattern_file_test.go",
+        "vendor_test.go",
+    ],
     embed = [":build"],
     deps = [
+        "//pkg/bazelclient/arguments",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/label",
         "//pkg/model/core",
         "//pkg/proto/model/filesystem",
         "//pkg/storage/object",

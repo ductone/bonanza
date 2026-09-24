@@ -539,7 +539,7 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoDefaultAttrsValue(ctx c
 
 	// Extract the default inheritable attrs from REPO.bazel.
 	return model_core.BuildPatchedMessage(func(patcher *model_core.ReferenceMessagePatcher[TMetadata]) (*model_analysis_pb.RepoDefaultAttrs_Value, error) {
-		defaultAttrs, err := model_starlark.ParseRepoDotBazel[TReference](
+		defaultAttrs, ignoredDirectories, err := model_starlark.ParseRepoDotBazel[TReference](
 			ctx,
 			string(repoFileData),
 			canonicalRepo.GetRootPackage().AppendTargetName(repoFileName),
@@ -552,7 +552,8 @@ func (c *baseComputer[TReference, TMetadata]) ComputeRepoDefaultAttrsValue(ctx c
 			return nil, fmt.Errorf("failed to parse %#v: %w", repoFileLabel.String(), err)
 		}
 		return &model_analysis_pb.RepoDefaultAttrs_Value{
-			InheritableAttrs: defaultAttrs.Merge(patcher),
+			InheritableAttrs:   defaultAttrs.Merge(patcher),
+			IgnoredDirectories: ignoredDirectories,
 		}, nil
 	})
 }

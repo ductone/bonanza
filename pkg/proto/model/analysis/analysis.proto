@@ -96,6 +96,39 @@ message BuildSpecification {
       google.protobuf.Duration maximum_cache_duration = 2;
     }
 
+    // A repository source tree captured from a Bazel --vendor_dir. Canonical
+    // repository names may represent either modules or repositories generated
+    // by module extensions and use_repo_rule().
+    message VendoredRepo {
+      string canonical_repo = 1;
+
+      bonanza.model.filesystem.DirectoryReference root_directory_reference = 2;
+    }
+
+    // A registry snapshot captured from _registries in a Bazel --vendor_dir.
+    // File entries are checked against MODULE.bazel.lock by the client before
+    // uploading, so workers only read registry metadata that the lockfile
+    // authorizes.
+    message VendoredRegistry {
+      message File {
+        // Slash-separated path relative to the registry root.
+        string path = 1;
+
+        // SHA-256 digest of the file, as recorded in
+        // MODULE.bazel.lock.registryFileHashes.
+        bytes sha256 = 2;
+      }
+
+      // Normalized origin-root registry URL, including a trailing slash.
+      string url = 1;
+
+      bonanza.model.filesystem.DirectoryReference root_directory_reference = 2;
+
+      // Files in the registry root that were verified against the root
+      // module's lockfile, sorted by path.
+      repeated File files = 3;
+    }
+
     // Non-empty list of modules for which explicit copies of source code
     // are provided.
     repeated Module modules = 1;
@@ -173,6 +206,17 @@ message BuildSpecification {
     // sources, and through repository_ctx.download() in PKIX, ASN.1 DER
     // form.
     bytes fetch_platform_pkix_public_key = 15;
+
+    // Source trees captured from --vendor_dir, sorted by canonical_repo.
+    repeated VendoredRepo vendored_repos = 16;
+
+    // Registry mirrors captured from --vendor_dir/_registries, sorted by URL.
+    repeated VendoredRegistry vendored_registries = 17;
+
+    // If true, every repository and registry file must be present in the
+    // validated snapshot. Normal vendor mode resolves unvendored repos using
+    // their repository rules and fetches registry files absent from the mirror.
+    bool strict_vendor_mode = 18;
   }
 }
 
@@ -1673,6 +1717,9 @@ message RepoDefaultAttrs {
     // Default values of attributes that need to be attached to all
     // targets in this repo.
     bonanza.model.starlark.InheritableAttrs inheritable_attrs = 1;
+    // Repo-relative directory globs passed to REPO.bazel's
+    // ignore_directories(). They affect package discovery.
+    repeated string ignored_directories = 2;
   }
 }
 
@@ -2489,3 +2536,24 @@ message VisibleTarget {
     string label = 1;
   }
 }
+
+// ConfiguredQueryResult analyzes targets matched by a loading-phase query
+// without evaluating their build actions. Only expressions whose result set is
+// independent of configured dependency edges are accepted by the client.
+message ConfiguredQueryResult {
+  message Key {
+    QueryExpression expression = 1;
+    repeated BuildResult.Key.Configuration configurations = 2;
+  }
+
+  message Value {
+    message Target {
+      string label = 1;
+      string kind = 2;
+      // Paths relative to the root of a Bonanza materialized output tree.
+      repeated string files = 3;
+    }
+    repeated Target targets = 1;
+  }
+}
+

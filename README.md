@@ -103,12 +103,32 @@ measured at scale. `tools/e2e/run.sh` performs a cold build followed by
 a warm one and reports the elapsed time of each; it does not assert a
 hit rate.
 
-What Bonanza still cannot do is give you your build outputs.
-`bonanza_bazel build` verifies that a build succeeds and prints a link
-into `bonanza_browser`; `BuildResult.Value` carries no output set, and
-the client has no artifact materialization. The client implements
-`build`, `test`, `info`, `license` and `version`. There is no `run`,
-`query` or `cquery` command, and no Build Event Protocol.
+`bonanza_bazel build` materializes outputs beneath `bonanza-out`, and
+`bonanza_bazel test`, `run`, and loading-phase `query` are supported.
+`cquery --output=files` analyzes configured `DefaultInfo.files` without
+executing the target's actions. Its target selection supports patterns,
+`set()`, set operations, `kind()`, and `filter()`; configured dependency
+walks and `attr()` are rejected rather than using loading-phase results.
+Build and test accept `--target_pattern_file`.
+
+`--vendor_dir` uploads Bazel's full canonical repository names and
+lockfile-verified registry metadata. It requires `--lockfile_mode=error`;
+repos absent from the snapshot use their normal repository rules, as in
+Bazel. `--strict_vendor` instead rejects missing repos. Source uploads
+exclude ignored local state and can require Git filtering before upload.
+
+Client-side `flag_alias` declarations in the root or vendored
+`MODULE.bazel` resolve named build-setting flags for build, test, run,
+and cquery. Alias targets using apparent repository names need a
+canonical label instead.
+
+An explicit `bonanza_worker.reapi_runners` backend sends fixed-output
+Bonanza commands to a Buildbarn REv2 Execute/CAS endpoint. It does not
+need FUSE and only selects the `c1.queue=small` or `link` platform.
+Stateful repository-rule actions requiring writable inputs and stable
+input-root paths are not supported by this backend; use a native
+Bonanza worker for those actions. Bonanza still requires its own
+scheduler and object store, and has no Build Event Protocol.
 
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test
@@ -124,9 +144,9 @@ the way a target with an empty exec group does.
 ## Differences from upstream
 
 This fork tracks [buildbarn/bonanza](https://github.com/buildbarn/bonanza)
-and adds the following. All of it is loading- and analysis-phase work:
-none of it makes the client able to run a test, resolve a query or
-launch a binary, because those commands do not exist yet.
+and adds the following. Client output materialization, test execution,
+run, and query are supported; the command-line feature set remains
+smaller than Bazel's.
 
 **Aspects.** `aspect()` supports `attrs`, `toolchains`,
 `required_providers`, `required_aspect_providers`, `provides`,

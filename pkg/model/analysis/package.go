@@ -43,6 +43,13 @@ func (c *baseComputer[TReference, TMetadata]) ComputePackageValue(ctx context.Co
 	if !allBuiltinsModulesNames.IsSet() || !repoDefaultAttrsValue.IsSet() || !gotFileReader {
 		return PatchedPackageValue[TMetadata]{}, evaluation.ErrMissingDependency
 	}
+	ignored, err := newIgnoredDirectories(repoDefaultAttrsValue.Message.IgnoredDirectories)
+	if err != nil {
+		return PatchedPackageValue[TMetadata]{}, fmt.Errorf("invalid REPO.bazel ignore_directories: %w", err)
+	}
+	if ignored.contains(canonicalPackage.GetPackagePath()) {
+		return PatchedPackageValue[TMetadata]{}, fmt.Errorf("package %q is ignored by REPO.bazel", key.Label)
+	}
 
 	builtinsModuleNames := allBuiltinsModulesNames.Message.BuiltinsModuleNames
 	thread := c.newStarlarkThread(ctx, e, builtinsModuleNames)

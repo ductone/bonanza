@@ -8,8 +8,10 @@ import (
 // setting for which an override was provided on the command line or in
 // a bazelrc file, and the value that is assigned to it.
 type BuildSettingOverride struct {
-	Label string
-	Value string
+	Label            string
+	Value            string
+	IsAlias          bool
+	HasExplicitValue bool
 }
 
 // parseBuildSettingOverrideFlag interprets command line options that

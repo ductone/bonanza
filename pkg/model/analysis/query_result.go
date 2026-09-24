@@ -162,7 +162,7 @@ func (ev *queryEvaluator[TReference, TMetadata]) evaluateBinary(binary *model_an
 func (ev *queryEvaluator[TReference, TMetadata]) expandPatterns(patterns []string) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
 	for _, pattern := range patterns {
-		apparent, err := label.NewApparentTargetPattern(pattern)
+		apparent, err := ev.rootRepo.GetRootPackage().AppendTargetPattern(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("invalid target pattern %#v: %w", pattern, err)
 		}

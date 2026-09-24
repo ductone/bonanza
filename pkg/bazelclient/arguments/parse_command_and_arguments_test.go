@@ -53,6 +53,22 @@ func TestParseCommandAndArguments(t *testing.T) {
 			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
 		})
 
+		t.Run("ModuleFlagAliases", func(t *testing.T) {
+			command, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+				"build",
+				"--incompatible_default_to_explicit_init_py",
+				"--noincompatible_default_to_explicit_init_py",
+				"--string_alias=value",
+				"//...",
+			})
+			require.NoError(t, err)
+			require.Equal(t, []arguments.BuildSettingOverride{
+				{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+				{Label: "noincompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+				{Label: "string_alias", Value: "value", IsAlias: true, HasExplicitValue: true},
+			}, command.(*arguments.BuildCommand).BuildSettingOverrides)
+		})
+
 		t.Run("BuildSettingOverrideNegatedWithValue", func(t *testing.T) {
 			_, err := arguments.ParseCommandAndArguments(
 				arguments.ConfigurationDirectives{},
@@ -617,4 +633,27 @@ func TestParseCommandAndArguments(t *testing.T) {
 			require.EqualError(t, err, "config expansion for configuration directive \"version:foo\" contains a cycle")
 		})
 	})
+}
+
+func TestQueryOutputFlagIsScopedToQueryCommands(t *testing.T) {
+	query, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"query", "--output=label_kind", "//pkg:all",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_LabelKind), query.(*arguments.QueryCommand).QueryFlags.Output)
+
+	cquery, err := arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"cquery", "--output=files", "--platforms=//platforms:exec", "--incompatible_default_to_explicit_init_py", "set(//pkg:target)",
+	})
+	require.NoError(t, err)
+	require.Equal(t, arguments.QueryOutput(arguments.QueryOutput_Files), cquery.(*arguments.CqueryCommand).CqueryFlags.Output)
+	require.Equal(t, "//platforms:exec", cquery.(*arguments.CqueryCommand).BuildFlags.Platforms)
+	require.Equal(t, []arguments.BuildSettingOverride{
+		{Label: "incompatible_default_to_explicit_init_py", Value: "true", IsAlias: true},
+	}, cquery.(*arguments.CqueryCommand).BuildSettingOverrides)
+
+	_, err = arguments.ParseCommandAndArguments(arguments.ConfigurationDirectives{}, []string{
+		"build", "--output=files", "//pkg:target",
+	})
+	require.ErrorContains(t, err, "does not apply")
 }
