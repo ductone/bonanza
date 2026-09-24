@@ -130,6 +130,16 @@ input-root paths are not supported by this backend; use a native
 Bonanza worker for those actions. Bonanza still requires its own
 scheduler and object store, and has no Build Event Protocol.
 
+The REAPI runner uses one connection and instance for execution, CAS, and
+ByteStream; readiness requires SHA-256 execution and CAS capabilities.
+Interrupted named operations resume through `WaitExecution` without resubmitting
+the action; cancellation requests `CancelOperation` when an operation name is
+known (servers may implement it only on a best-effort basis). The configured
+runner concurrency bounds simultaneous actions. Remote cache hits are imported
+like executed results, while remote failures are returned without a local
+fallback. In-memory Tree imports reject blobs over 64 MiB instead of allocating
+unbounded memory.
+
 `test` builds the targets its patterns match, runs whichever of them are
 declared by a test rule, and prints a per-target summary. A failing test
 is a result rather than a build failure: the client reports it and exits

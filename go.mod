@@ -15,6 +15,7 @@ replace go.starlark.net => go.starlark.net v0.0.0-20250225190231-0d3f41d403af
 replace cel.dev/expr => cel.dev/expr v0.25.1
 
 require (
+	cloud.google.com/go/longrunning v1.0.0
 	filippo.io/edwards25519 v1.2.0
 	github.com/bazelbuild/buildtools v0.0.0-20260528135316-84fa6c32aee6
 	github.com/bazelbuild/remote-apis v0.0.0-20260331222004-becdd8f9ff81
@@ -50,7 +51,6 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.11.0 // indirect
-	cloud.google.com/go/longrunning v1.0.0 // indirect
 	cloud.google.com/go/monitoring v1.29.0 // indirect
 	cloud.google.com/go/storage v1.62.2 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.32.0 // indirect
