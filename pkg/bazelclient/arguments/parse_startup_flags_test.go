@@ -81,4 +81,16 @@ func TestParseStartupFlags(t *testing.T) {
 		}, flags)
 		require.Equal(t, 6, argsConsumed)
 	})
+	t.Run("BazelServerOnlyFlags", func(t *testing.T) {
+		for _, option := range []string{
+			"--host_jvm_args=-Djavax.net.ssl.trustStorePassword=secret",
+			"--max_idle_secs=600",
+			"--output_base=/tmp/bazel",
+			"--experimental_remote_repo_contents_cache",
+		} {
+			_, _, err := arguments.ParseStartupFlags([]string{option, "build"})
+			require.ErrorContains(t, err, "unsupported")
+			require.NotContains(t, err.Error(), "secret")
+		}
+	})
 }

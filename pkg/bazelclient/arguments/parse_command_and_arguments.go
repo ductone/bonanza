@@ -1,6 +1,9 @@
 package arguments
 
 import (
+	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -87,7 +90,61 @@ func ParseCommandAndArguments(configurationDirectives ConfigurationDirectives, a
 	}
 	cmd.Reset()
 
-	return cmd, parseArguments(cmd, ancestors, configurationDirectives, args)
+	if err := parseArguments(cmd, ancestors, configurationDirectives, args); err != nil {
+		return nil, err
+	}
+	common := cmd.getCommonFlags()
+	for _, endpoint := range []struct{ name, value string }{
+		{"--remote_cache", common.RemoteCache},
+		{"--remote_executor", common.RemoteExecutor},
+	} {
+		if endpoint.value != "" {
+			if _, _, err := ParseBonanzaEndpoint(endpoint.value); err != nil {
+				return nil, fmt.Errorf("%s: %w", endpoint.name, err)
+			}
+		}
+	}
+	seconds, err := strconv.ParseFloat(common.ShowProgressRateLimit, 64)
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds > float64(math.MaxInt64)/1e9 {
+		return nil, fmt.Errorf("--show_progress_rate_limit must be a finite nonnegative number of seconds, got %q", common.ShowProgressRateLimit)
+	}
+	return cmd, nil
+}
+
+// Bazel command options without matching Bonanza semantics must not be
+// mistaken for MODULE.bazel flag_alias declarations.
+func unsupportedBazelFlag(name string) string {
+	switch name {
+	case "--verbose_failures", "--noverbose_failures", "--experimental_ui_max_stdouterr_bytes":
+		return "Bonanza cannot reproduce Bazel's action command/stderr presentation"
+	case "--show_result":
+		return "Bonanza does not yet report Bazel's top-level target result paths"
+	case "--test_summary":
+		return "Bonanza does not yet provide Bazel's detailed test summary"
+	case "--incompatible_default_to_explicit_init_py", "--noincompatible_default_to_explicit_init_py":
+		return "Bonanza does not implement Bazel's Python implicit __init__.py toggle"
+	case "--remote_upload_local_results", "--noremote_upload_local_results",
+		"--remote_timeout", "--remote_retries", "--remote_default_exec_properties",
+		"--remote_local_fallback", "--noremote_local_fallback":
+		return "Bazel REAPI cache/executor controls cannot configure Bonanza storage/scheduler"
+	case "--remote_download_minimal", "--remote_download_outputs", "--jobs":
+		return "Bonanza's execution and output-materialization policies differ from Bazel"
+	case "--check_visibility", "--nocheck_visibility":
+		return "Bonanza does not implement Bazel's visibility override"
+	default:
+		return ""
+	}
+}
+
+func unsupportedBazelStartupFlag(name string) string {
+	switch name {
+	case "--max_idle_secs", "--host_jvm_args":
+		return "Bonanza is a one-shot Go client, not Bazel's persistent JVM server"
+	case "--output_base", "--experimental_remote_repo_contents_cache":
+		return "Bonanza does not use Bazel's local output base or REAPI repository cache"
+	default:
+		return ""
+	}
 }
 
 var boolExpectedValues = []string{

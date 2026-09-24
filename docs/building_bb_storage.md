@@ -28,11 +28,10 @@ Make sure to adjust any paths as needed (or change your username to
 `ed`).
 
 ```
-# Like Bazel, Bonanza has --remote_cache and --remote_executor flags.
-# However, unlike Bazel they can't point to REv2 servers. Bonanza uses
-# its own storage and execution protocols.
-common:bonanza --remote_cache=unix:///Users/ed/bonanza_demo/bonanza_storage_frontend.sock
-common:bonanza --remote_executor=unix:///Users/ed/bonanza_demo/bonanza_scheduler_clients.sock
+# Bonanza requires an explicit bonanza+ scheme. Bazel's REAPI cache and
+# executor are not Bonanza storage and scheduler services.
+common:bonanza --remote_cache=bonanza+unix:///Users/ed/bonanza_demo/bonanza_storage_frontend.sock
+common:bonanza --remote_executor=bonanza+unix:///Users/ed/bonanza_demo/bonanza_scheduler_clients.sock
 
 # Bonanza supports encrypting CAS objects using AES. This key can be
 # generated client side and is passed along to the cluster when a build

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "logging",
@@ -13,4 +13,11 @@ go_library(
         "//pkg/bazelclient/formatted",
         "@org_golang_x_term//:term",
     ],
+)
+
+go_test(
+    name = "logging_test",
+    srcs = ["console_logger_test.go"],
+    embed = [":logging"],
+    deps = ["//pkg/bazelclient/formatted"],
 )

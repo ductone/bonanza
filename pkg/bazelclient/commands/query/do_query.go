@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"math"
-	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -64,38 +62,21 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// newGRPCClient creates a gRPC client for one of the endpoints provided
-// on the command line (e.g., --remote_cache or --remote_executor).
-//
-// This is a copy of the identically named function in the "build"
-// command. It is small enough that duplicating it here is preferable
-// to exporting it from a package whose primary purpose is implementing
-// "bazel build".
-func newGRPCClient(endpoint string, commonFlags *arguments.CommonFlags) (*grpc.ClientConn, error) {
-	endpointURL, err := url.Parse(endpoint)
+// newGRPCClient connects to Bonanza's storage or scheduler protocol, never REAPI.
+func newGRPCClient(endpoint string) (*grpc.ClientConn, error) {
+	target, tls, err := arguments.ParseBonanzaEndpoint(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+		return nil, err
 	}
-
-	var target string
 	var clientCredentials credentials.TransportCredentials
-	switch scheme := endpointURL.Scheme; scheme {
-	case "grpc":
-		target = endpointURL.Host
-		clientCredentials = insecure.NewCredentials()
-	case "grpcs":
-		target = endpointURL.Host
+	if tls {
 		clientCredentials, err = advancedtls.NewClientCreds(&advancedtls.Options{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create TLS client credentials: %w", err)
 		}
-	case "unix":
-		target = endpoint
+	} else {
 		clientCredentials = insecure.NewCredentials()
-	default:
-		return nil, errors.New("scheme is not supported")
 	}
-
 	return grpc.NewClient(target, grpc.WithTransportCredentials(clientCredentials))
 }
 
@@ -203,7 +184,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Text("Invalid value for --output"))
 	}
 
-	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache, &args.CommonFlags)
+	remoteCacheClient, err := newGRPCClient(args.CommonFlags.RemoteCache)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_cache=%#v: %s", args.CommonFlags.RemoteCache, err))
 	}
@@ -849,7 +830,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 		logger.Fatal(formatted.Textf("Failed to parse --remote_executor_client_certificate_chain=%#v: %s", args.CommonFlags.RemoteExecutorClientCertificateChain, err))
 	}
 
-	remoteExecutorClient, err := newGRPCClient(args.CommonFlags.RemoteExecutor, &args.CommonFlags)
+	remoteExecutorClient, err := newGRPCClient(args.CommonFlags.RemoteExecutor)
 	if err != nil {
 		logger.Fatal(formatted.Textf("Failed to create gRPC client for --remote_executor=%#v: %s", args.CommonFlags.RemoteExecutor, err))
 	}

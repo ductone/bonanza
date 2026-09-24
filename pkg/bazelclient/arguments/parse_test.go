@@ -39,9 +39,11 @@ func TestParse(t *testing.T) {
 		require.Equal(t, &arguments.BuildCommand{
 			CommonFlags: arguments.CommonFlags{
 				Color:                  arguments.Color_Auto,
+				Curses:                 true,
 				LockfileMode:           arguments.LockfileMode_Update,
 				RemoteCacheCompression: true,
 				RespectGitignore:       true,
+				ShowProgressRateLimit:  "0.2",
 			},
 			BuildFlags: arguments.BuildFlags{
 				KeepGoing:     true,
@@ -135,5 +137,34 @@ func TestParseRejectsUnsupportedStartupRCOption(t *testing.T) {
 		root, path.LocalFormat, path.LocalFormat.NewParser(workspace),
 		path.LocalFormat.NewParser(workspace), path.LocalFormat.NewParser(workspace),
 	)
-	require.ErrorContains(t, err, "startup option \"--max_idle_secs=600\" is not supported")
+	require.ErrorContains(t, err, "startup option \"--max_idle_secs\" is unsupported")
+}
+
+func TestExplicitBonanzaInvocationSkipsBazelOnlyStartupRC(t *testing.T) {
+	workspace := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".bazelrc"), []byte("startup --host_jvm_args=-Djavax.net.ssl.trustStorePassword=secret\n"), 0o600))
+	root, err := filesystem.NewLocalDirectory(&path.RootBuilder)
+	require.NoError(t, err)
+	defer root.Close()
+	_, err = arguments.Parse([]string{"--nosystem_rc", "--nohome_rc", "version"}, root,
+		path.LocalFormat, path.LocalFormat.NewParser(workspace),
+		path.LocalFormat.NewParser(workspace), path.LocalFormat.NewParser(workspace))
+	require.ErrorContains(t, err, "startup option \"--host_jvm_args\" is unsupported")
+	require.NotContains(t, err.Error(), "secret")
+
+	cmd, err := arguments.Parse([]string{"--ignore_all_rc_files", "version"}, root,
+		path.LocalFormat, path.LocalFormat.NewParser(workspace),
+		path.LocalFormat.NewParser(workspace), path.LocalFormat.NewParser(workspace))
+	require.NoError(t, err)
+	require.IsType(t, &arguments.VersionCommand{}, cmd)
+
+	bonanzaRC := filepath.Join(workspace, "bonanza.bazelrc")
+	require.NoError(t, os.WriteFile(bonanzaRC, []byte("common:bonanza --remote_cache=bonanza+unix:///run/bonanza/storage.sock\n"), 0o600))
+	cmd, err = arguments.Parse([]string{
+		"--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--bazelrc=" + bonanzaRC,
+		"version", "--config=bonanza",
+	}, root, path.LocalFormat, path.LocalFormat.NewParser(workspace),
+		path.LocalFormat.NewParser(workspace), path.LocalFormat.NewParser(workspace))
+	require.NoError(t, err)
+	require.Equal(t, "bonanza+unix:///run/bonanza/storage.sock", cmd.(*arguments.VersionCommand).CommonFlags.RemoteCache)
 }

@@ -36,5 +36,10 @@ func NewLoggerFromFlags(commonFlags *arguments.CommonFlags) Logger {
 			writeFormatted = formatted.WritePlainText
 		}
 	}
-	return NewConsoleLogger(w, writeFormatted)
+	return &consoleLogger{
+		w:              w,
+		writeFormatted: writeFormatted,
+		curses:         commonFlags.Curses && term.IsTerminal(int(w.Fd())),
+		showTimestamps: commonFlags.ShowTimestamps,
+	}
 }

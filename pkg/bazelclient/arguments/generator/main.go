@@ -38,6 +38,7 @@ func toSymbolName(s string, public bool) string {
 func main() {
 	fmt.Println("package arguments")
 	fmt.Println("import (")
+	fmt.Println("\"fmt\"")
 	fmt.Println("\"strings\"")
 	fmt.Println(")")
 
@@ -306,6 +307,7 @@ func main() {
 	fmt.Printf("          allowFlags = false\n")
 	fmt.Printf("        default:\n")
 	fmt.Printf("          label, value, ok := parseBuildSettingOverrideFlag(longOptionName, assignmentIndex >= 0, optionValue)\n")
+	fmt.Printf("          if reason := unsupportedBazelFlag(longOptionName); reason != \"\" { return fmt.Errorf(\"flag %%s is unsupported: %%s\", longOptionName, reason) }\n")
 	fmt.Printf("          if !ok {\n")
 	fmt.Printf("            if strings.HasPrefix(longOptionName, \"--@\") || strings.HasPrefix(longOptionName, \"--//\") || strings.HasPrefix(longOptionName, \"--no@\") || strings.HasPrefix(longOptionName, \"--no//\") { return FlagNotRecognizedError{Flag: longOptionName} }\n")
 	fmt.Printf("            switch cmd.(type) {\n")
@@ -374,6 +376,7 @@ func main() {
 		flag.flagType.emitStartupParser(flag.longName)
 	}
 	fmt.Printf("    default:\n")
+	fmt.Printf("      if reason := unsupportedBazelStartupFlag(longOptionName); reason != \"\" { return nil, 0, fmt.Errorf(\"startup flag %%s is unsupported: %%s; use --ignore_all_rc_files for an audited Bonanza invocation\", longOptionName, reason) }\n")
 	fmt.Printf("      return nil, 0, FlagNotRecognizedError{Flag: longOptionName}\n")
 	fmt.Printf("    }\n")
 	fmt.Printf("  }\n")

@@ -120,10 +120,44 @@ values or the current client value (missing names unset an inherited value);
 later occurrences win. Action overrides are merged beneath explicit action
 environment variables, while repository overrides replace the registered
 repository platform environment. `--announce_rc` reports applied rc and
-`--config` options with environment values redacted. Unsupported rc startup
-options, including Bazel's server-only `--max_idle_secs`, fail explicitly.
-Bonanza is not yet a drop-in replacement for C1's unmodified `.bazelrc` or
-its Buildbarn endpoint.
+`--config` options with environment values redacted. `--curses` redraws
+progress only on a terminal; `--nocurses` retains log lines.
+`--show_timestamps` prefixes diagnostics and `--show_progress_rate_limit=N`
+limits progress updates to one every N seconds (zero disables throttling).
+
+**C1 invocation is explicitly opt-in.** Use
+`bonanza_bazel --ignore_all_rc_files build ...` with a separately reviewed set
+of Bonanza options, or
+`bonanza_bazel --nosystem_rc --noworkspace_rc --nohome_rc --bazelrc=/path/to/bonanza.bazelrc build --config=bonanza ...`
+with a Bonanza-only rc file. The unmodified C1 rc and `tools/bazel/bazelw`
+must **not** be passed to Bonanza. Squire's `/etc/bazel.bazelrc` supplies
+`--host_jvm_args` and C1's workspace rc supplies `--max_idle_secs`; neither
+has meaning for Bonanza's one-shot Go client, and both fail explicitly.
+Likewise, Bazel's wrapper startup `--output_base` and
+`--experimental_remote_repo_contents_cache` are rejected rather than ignored.
+
+Bonanza's `--remote_cache` is **Bonanza object storage**, and
+`--remote_executor` is **Bonanza's scheduler**. Both require explicit
+`bonanza+grpc://host:port`, `bonanza+grpcs://host:port`, or
+`bonanza+unix:///absolute/socket` endpoints. Bazel `grpc://` REAPI (including
+C1's Buildbarn and plaid-cache addresses), REST `http://`, and plain `unix://`
+addresses are rejected before source upload. The typed scheme is an assertion
+by the caller, not a REAPI adapter or a proof that a service speaks Bonanza's
+RPCs. Obtain endpoints, client certificates, and keys from the approved
+Bonanza fleet; never use demo credentials or point Bonanza at Buildbarn.
+`--remote_cache_compression` is Bonanza's LZW object encoding, **not** Bazel's
+REAPI compression negotiation.
+
+Known C1 rc/Make options with no equivalent semantics fail during argument
+parsing, rather than being mistaken for `MODULE.bazel` flag aliases:
+`--verbose_failures`, `--experimental_ui_max_stdouterr_bytes`, `--show_result`,
+`--test_summary`, `--incompatible_default_to_explicit_init_py`,
+`--remote_upload_local_results`, `--remote_timeout`, `--remote_retries`,
+`--remote_default_exec_properties`, `--remote_local_fallback`,
+`--remote_download_minimal`, `--remote_download_outputs`, `--jobs`, and
+`--check_visibility`. The separate BEP, test-filter/result, and release
+surfaces remain integration dependencies. C1 has not switched its entrypoint,
+and this contract does not establish default C1 readiness.
 
 `--vendor_dir` uploads Bazel's full canonical repository names and
 lockfile-verified registry metadata. It requires `--lockfile_mode=error`;
