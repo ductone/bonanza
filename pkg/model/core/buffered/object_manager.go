@@ -125,7 +125,7 @@ func (oe *objectExporter) ExportReference(ctx context.Context, internalReference
 	)
 	if err != nil {
 		var badReference object.LocalReference
-		return badReference, nil
+		return badReference, err
 	}
 	return internalReference.LocalReference, nil
 }

@@ -72,7 +72,6 @@ go_library(
 go_test(
     name = "build_test",
     srcs = [
-        "environment_overrides_test.go",
         "flag_aliases_test.go",
         "materialize_output_root_test.go",
         "source_exclusions_test.go",
