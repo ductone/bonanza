@@ -110,6 +110,24 @@ func TestScanVendorDirectoryMapsBuiltinBazelToolsExtensionRepo(t *testing.T) {
 	require.True(t, vendor.Repos[0].Pinned)
 }
 
+func TestScanVendorDirectoryMapsBuiltinPlatformsExtensionRepo(t *testing.T) {
+	workspace := t.TempDir()
+	vendorDirectory := filepath.Join(workspace, "vendor")
+	writeVendoredRepo(t, vendorDirectory, "platforms+host_platform+host_platform")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(vendorDirectory, "VENDOR.bazel"),
+		[]byte(`pin("@@platforms+host_platform+host_platform")`),
+		0o644,
+	))
+
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	require.NoError(t, err)
+	require.Len(t, vendor.Repos, 1)
+	require.Equal(t, "platforms++host_platform+host_platform", vendor.Repos[0].CanonicalRepo.String())
+	require.Equal(t, filepath.Join(vendorDirectory, "platforms+host_platform+host_platform"), vendor.Repos[0].RootPath)
+	require.True(t, vendor.Repos[0].Pinned)
+}
+
 func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 	t.Run("MalformedMarker", func(t *testing.T) {
 		workspace := t.TempDir()

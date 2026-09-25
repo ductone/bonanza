@@ -237,13 +237,16 @@ func loadVendorConfiguration(vendorFilePath string) (vendorConfiguration, error)
 }
 
 // Bazel stores its built-in platforms repository as @platforms.marker and
-// extension repositories of its built-in bazel_tools module without a version
-// separator. Map these names to Bonanza's module-instance representation only
-// at the vendor boundary, keeping ordinary canonical names strict.
+// extension repositories of its built-in platforms and bazel_tools modules
+// without a module-instance separator. Normalize these at the vendor boundary,
+// keeping ordinary canonical repository names strict.
 func parseVendorRepoName(name string) (label.CanonicalRepo, error) {
-	if name == "platforms" {
+	switch {
+	case name == "platforms":
 		name = "platforms+"
-	} else if strings.HasPrefix(name, "bazel_tools+") && strings.Count(name, "+") == 2 {
+	case strings.HasPrefix(name, "platforms+") && strings.Count(name, "+") == 2:
+		name = "platforms+" + name[len("platforms"):]
+	case strings.HasPrefix(name, "bazel_tools+") && strings.Count(name, "+") == 2:
 		name = "bazel_tools+" + name[len("bazel_tools"):]
 	}
 	return label.NewCanonicalRepo(name)
