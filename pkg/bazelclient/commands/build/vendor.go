@@ -236,11 +236,24 @@ func loadVendorConfiguration(vendorFilePath string) (vendorConfiguration, error)
 	return configuration, nil
 }
 
+// Bazel stores its built-in platforms repository as @platforms.marker and
+// extension repositories of its built-in bazel_tools module without a version
+// separator. Map these names to Bonanza's module-instance representation only
+// at the vendor boundary, keeping ordinary canonical names strict.
+func parseVendorRepoName(name string) (label.CanonicalRepo, error) {
+	if name == "platforms" {
+		name = "platforms+"
+	} else if strings.HasPrefix(name, "bazel_tools+") && strings.Count(name, "+") == 2 {
+		name = "bazel_tools+" + name[len("bazel_tools"):]
+	}
+	return label.NewCanonicalRepo(name)
+}
+
 func parseVendorCanonicalRepo(value string) (label.CanonicalRepo, error) {
 	if !strings.HasPrefix(value, "@@") {
 		return label.CanonicalRepo{}, fmt.Errorf("repository %q must start with @@", value)
 	}
-	canonicalRepo, err := label.NewCanonicalRepo(strings.TrimPrefix(value, "@@"))
+	canonicalRepo, err := parseVendorRepoName(strings.TrimPrefix(value, "@@"))
 	if err != nil {
 		return label.CanonicalRepo{}, fmt.Errorf("invalid canonical repository %q: %w", value, err)
 	}
@@ -266,7 +279,8 @@ func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (ma
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("vendor marker %q is not a regular file", name)
 		}
-		canonicalRepo, err := label.NewCanonicalRepo(strings.TrimSuffix(strings.TrimPrefix(name, "@"), ".marker"))
+		vendoredRepoName := strings.TrimSuffix(strings.TrimPrefix(name, "@"), ".marker")
+		canonicalRepo, err := parseVendorRepoName(vendoredRepoName)
 		if err != nil {
 			return nil, fmt.Errorf("vendor marker %q does not contain a valid canonical repository name: %w", name, err)
 		}
@@ -277,12 +291,15 @@ func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (ma
 		if err != nil {
 			return nil, err
 		}
+		if existing, exists := repos[canonicalRepo.String()]; exists {
+			return nil, fmt.Errorf("vendor markers %q and %q both map to canonical repository %q", "@"+filepath.Base(existing.repo.RootPath)+".marker", name, "@@"+canonicalRepo.String())
+		}
 		canonicalRepoName := canonicalRepo.String()
 		_, pinned := configuration.pinnedRepos[canonicalRepoName]
 		repos[canonicalRepoName] = vendorRepoRecord{
 			repo: VendoredRepo{
 				CanonicalRepo: canonicalRepo,
-				RootPath:      filepath.Join(vendorPath, canonicalRepoName),
+				RootPath:      filepath.Join(vendorPath, vendoredRepoName),
 				Pinned:        pinned,
 			},
 			markerFiles: markerFiles,
@@ -293,19 +310,19 @@ func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (ma
 		info, err := os.Lstat(record.repo.RootPath)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("vendor marker for %q does not have matching directory %q", "@@"+canonicalRepoName, canonicalRepoName)
+				return nil, fmt.Errorf("vendor marker for %q does not have matching directory %q", "@@"+canonicalRepoName, filepath.Base(record.repo.RootPath))
 			}
-			return nil, fmt.Errorf("stat vendor directory %q: %w", canonicalRepoName, err)
+			return nil, fmt.Errorf("stat vendor directory %q: %w", filepath.Base(record.repo.RootPath), err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("vendor marker for %q has non-directory counterpart %q", "@@"+canonicalRepoName, canonicalRepoName)
+			return nil, fmt.Errorf("vendor marker for %q has non-directory counterpart %q", "@@"+canonicalRepoName, filepath.Base(record.repo.RootPath))
 		}
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		canonicalRepo, err := label.NewCanonicalRepo(entry.Name())
+		canonicalRepo, err := parseVendorRepoName(entry.Name())
 		if err != nil {
 			continue
 		}
@@ -405,7 +422,7 @@ func resolveVendorMarkerFile(workspacePath string, repos map[string]vendorRepoRe
 
 	rootPath := workspacePath
 	if parts[0] != "" {
-		canonicalRepo, err := label.NewCanonicalRepo(parts[0])
+		canonicalRepo, err := parseVendorRepoName(parts[0])
 		if err != nil {
 			return "", fmt.Errorf("FILE input %q has invalid repository: %w", fileLabel, err)
 		}
