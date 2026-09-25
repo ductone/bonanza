@@ -371,6 +371,7 @@ func PerformBuild(
 			commonFlags.VendorDir,
 			registryURLs,
 			/* requireLockfile = */ true,
+			/* strictVendorMode = */ strictVendorMode,
 		)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid --vendor_dir=%q: %s", commonFlags.VendorDir, err))
@@ -772,6 +773,7 @@ func PerformBuild(
 			&model_analysis_pb.BuildSpecification_Value_VendoredRepo{
 				CanonicalRepo:          vendoredRepo.CanonicalRepo.String(),
 				RootDirectoryReference: rootDirectoryReference,
+				Pinned:                 vendoredRepo.Pinned,
 			},
 		)
 	}

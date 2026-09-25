@@ -151,6 +151,71 @@ resolve sibling aliases directly from the snapshot without running the
 producing extension. Source uploads exclude ignored local state and can
 require Git filtering before upload.
 
+`--strict_vendor` additionally requires every generated repository in the
+snapshot to be justified, and reports the complete set of unjustified
+ones in a single error. A Bazel `@*.marker` is not accepted as that
+evidence on its own: its fingerprint is not reproducible here, and a
+hand-written marker around a copy of a host external cache is exactly the
+input this check exists to reject. A generated repository is justified by
+`MODULE.bazel.lock` recording the producing module extension and the
+repository, by a `use_repo()`/`use_repo_rule()` declaration in the root
+`MODULE.bazel` or in a vendored module, by a `VENDOR.bazel` `pin()`, or by
+an import (below).
+
+`--vendor_dir/generated_repos.json` is a Bonanza-only manifest that
+imports generated repositories whose contents trusted CI materializes
+instead of `bazel vendor`:
+
+```json
+{
+  "version": 1,
+  "platform": "linux_arm64",
+  "repos": [
+    {
+      "canonical_repo": "rules_java++toolchains+remote_java_tools",
+      "extension": "@@rules_java+//java:extensions.bzl%toolchains",
+      "sha256": "2b1c…"
+    }
+  ]
+}
+```
+
+Each entry must name a canonical module extension or `use_repo_rule()`
+repository (no `@@`, no plain module source), the canonical identifier of
+the extension or repository rule that declares it, and the SHA-256 of the
+tree in `--vendor_dir/<canonical repo>/`. Validation fails closed on an
+unknown JSON field, an unsupported version, a malformed or unknown
+platform key, a repository that `VENDOR.bazel` ignores, a duplicate
+entry, a missing or non-directory counterpart, an identifier that neither
+the lockfile nor a `use_repo()`/`use_repo_rule()` declaration corroborates
+for that repository, a lockfile platform attribute that disagrees with the
+declared platform, and a digest mismatch — every one of them reported
+together, not one per build. `platform` is `"*"` for a
+platform-independent repository; a bundle otherwise declares exactly one
+platform (an `os_cpu` key such as `linux_arm64`), and an entry that names a
+different one is rejected instead of being mixed into the bundle. The
+digest covers directories, file contents and the executable bit, and
+symbolic link targets in sorted order; absolute symbolic links, symbolic
+links that escape the repository and irregular files are rejected, so a
+host cache copy is not a valid import. Imported repositories are pinned
+and, unlike Bazel-vendored repositories, need no `@*.marker`; a marker, if
+present, is still read.
+
+`bonanza_bazel info generated_repos` prints the complete generated
+repository closure of the pinned inputs and the snapshot —
+`present`/`missing`, the canonical repository, and the sources that
+require it (`lockfile`, `use_extension:<module>`,
+`use_repo_rule:<module>`, `import`, `pin`, and `snapshot` for a Bazel
+marker/directory pair) — so a bundle can be
+completed in one pass. It reports repositories the snapshot does not
+supply without failing: a closure is a superset of what any single target
+needs. This inventory is computed offline from the root and vendored
+`MODULE.bazel` files, `MODULE.bazel.lock` and the manifest; an
+`use_extension()` label whose apparent repository cannot be resolved to a
+single module source (a rename or multiple versions) is deliberately not
+guessed, and registry-sourced module sources that the snapshot does not
+contain are only reachable through the lockfile.
+
 Client-side `flag_alias` declarations in the root or vendored
 `MODULE.bazel` resolve named build-setting flags for build, test, run,
 and cquery. Alias targets using apparent repository names need a

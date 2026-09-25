@@ -273,6 +273,7 @@ func DoQuery(args *arguments.QueryCommand, workspacePath path.Parser) {
 			args.CommonFlags.VendorDir,
 			registryURLs,
 			/* requireLockfile = */ true,
+			/* strictVendorMode = */ strictVendorMode,
 		)
 		if err != nil {
 			logger.Fatal(formatted.Textf("Invalid --vendor_dir=%q: %s", args.CommonFlags.VendorDir, err))

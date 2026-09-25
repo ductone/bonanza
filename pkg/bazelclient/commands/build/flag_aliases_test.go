@@ -21,7 +21,7 @@ func TestVendoredFlagAliasResolvesCLIOverrides(t *testing.T) {
 flag_alias(name = "incompatible_default_to_explicit_init_py", starlark_flag = "//python/config_settings:incompatible_default_to_explicit_init_py")
 `), 0o644))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"incompatible_default_to_explicit_init_py": "@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py",

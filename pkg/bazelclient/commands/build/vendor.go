@@ -57,6 +57,15 @@ type VendorDirectory struct {
 	Repos            []VendoredRepo
 	Registries       []VendoredRegistry
 	FlagAliases      map[string]string
+	// GeneratedRepoImports lists the generated repositories that
+	// generated_repos.json declares, verifies against MODULE.bazel.lock or
+	// a use_repo()/use_repo_rule() declaration, scopes to a platform and
+	// pins.
+	GeneratedRepoImports []GeneratedRepoImport
+	// GeneratedRepoClosure is the complete set of generated repositories
+	// the pinned inputs can produce, together with the sources that require
+	// them and whether the snapshot supplies them.
+	GeneratedRepoClosure []GeneratedRepoClosureEntry
 }
 
 type vendorConfiguration struct {
@@ -76,6 +85,44 @@ type vendorRepoRecord struct {
 
 type vendorLockfile struct {
 	RegistryFileHashes map[string]string `json:"registryFileHashes"`
+	// ModuleExtensions records the repositories Bazel saw each module
+	// extension produce, together with the attributes it produced them
+	// from. Only extensions that MODULE.bazel.lock contains can justify a
+	// generated repository as a lockfile record.
+	ModuleExtensions map[string]vendorLockfileModuleExtension `json:"moduleExtensions"`
+}
+
+type vendorLockfileModuleExtension struct {
+	General vendorLockfileModuleExtensionGeneral `json:"general"`
+}
+
+type vendorLockfileModuleExtensionGeneral struct {
+	GeneratedRepoSpecs map[string]vendorLockfileRepoSpec `json:"generatedRepoSpecs"`
+}
+
+type vendorLockfileRepoSpec struct {
+	RepoRuleID string         `json:"repoRuleId"`
+	Attributes map[string]any `json:"attributes"`
+}
+
+// readVendorLockfile loads MODULE.bazel.lock. Registry hashes and the
+// module extension records that justify generated repositories are read
+// from the same document, so a malformed lockfile can never justify part
+// of the snapshot.
+func readVendorLockfile(workspacePath string) (*vendorLockfile, error) {
+	lockfilePath := filepath.Join(workspacePath, "MODULE.bazel.lock")
+	contents, err := os.ReadFile(lockfilePath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, errors.New("--vendor_dir with --lockfile_mode=error requires MODULE.bazel.lock")
+		}
+		return nil, fmt.Errorf("read MODULE.bazel.lock: %w", err)
+	}
+	var lockfile vendorLockfile
+	if err := json.Unmarshal(contents, &lockfile); err != nil {
+		return nil, fmt.Errorf("parse MODULE.bazel.lock: %w", err)
+	}
+	return &lockfile, nil
 }
 
 // ScanVendorDirectory validates a Bazel --vendor_dir before any source is
@@ -83,7 +130,13 @@ type vendorLockfile struct {
 // repositories and missing/stale inputs are errors rather than a silent remote
 // fallback. The caller supplies the effective registry order, which is also the
 // order the worker uses for module version selection.
-func ScanVendorDirectory(workspacePath path.Parser, vendorDir string, registryURLs []string, requireLockfile bool) (*VendorDirectory, error) {
+//
+// When strictVendorMode is set, every generated repository in the snapshot must
+// additionally be justified by MODULE.bazel.lock, a use_repo()/use_repo_rule()
+// declaration in the root or a vendored module, a VENDOR.bazel pin() or a
+// generated_repos.json import. A hand-written Bazel vendor marker alone is not
+// evidence that a repository is a reviewed, portable input.
+func ScanVendorDirectory(workspacePath path.Parser, vendorDir string, registryURLs []string, requireLockfile bool, strictVendorMode bool) (*VendorDirectory, error) {
 	if vendorDir == "" {
 		return nil, nil
 	}
@@ -121,12 +174,47 @@ func ScanVendorDirectory(workspacePath path.Parser, vendorDir string, registryUR
 	if err != nil {
 		return nil, err
 	}
-	reposByName, err := scanVendoredRepos(vendorPath, configuration)
+	manifest, err := loadGeneratedRepoManifest(vendorPath)
+	if err != nil {
+		return nil, err
+	}
+	importedDirectoryNames := manifestDirectoryNames(manifest)
+	reposByName, err := scanVendoredRepos(vendorPath, configuration, importedDirectoryNames)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateVendoredRepoMarkers(workspacePathStr, reposByName, configuration); err != nil {
 		return nil, err
+	}
+
+	var lockfile *vendorLockfile
+	if requireLockfile {
+		if lockfile, err = readVendorLockfile(workspacePathStr); err != nil {
+			return nil, err
+		}
+	}
+	declarations, err := scanGeneratedRepoDeclarations(workspacePathStr, vendorPath, reposByName, lockfile, path.LocalFormat)
+	if err != nil {
+		return nil, err
+	}
+	imports, err := scanGeneratedRepoImports(vendorPath, manifest, reposByName, configuration, declarations)
+	if err != nil {
+		return nil, err
+	}
+	if strictVendorMode {
+		if err := validateGeneratedRepoProvenance(declarations, imports.closure); err != nil {
+			return nil, err
+		}
+	}
+	for _, importedRepo := range imports.imports {
+		canonicalRepoName := importedRepo.CanonicalRepo.String()
+		reposByName[canonicalRepoName] = vendorRepoRecord{
+			repo: VendoredRepo{
+				CanonicalRepo: importedRepo.CanonicalRepo,
+				RootPath:      filepath.Join(vendorPath, importedRepo.DirectoryName),
+				Pinned:        true,
+			},
+		}
 	}
 
 	registries, err := scanVendoredRegistries(vendorPath, registryURLs)
@@ -153,12 +241,34 @@ func ScanVendorDirectory(workspacePath path.Parser, vendorDir string, registryUR
 	}
 
 	return &VendorDirectory{
-		RootPath:         vendorPath,
-		RootRelativePath: rootRelativePath,
-		Repos:            repos,
-		Registries:       registries,
-		FlagAliases:      aliases,
+		RootPath:             vendorPath,
+		RootRelativePath:     rootRelativePath,
+		Repos:                repos,
+		Registries:           registries,
+		FlagAliases:          aliases,
+		GeneratedRepoImports: imports.imports,
+		GeneratedRepoClosure: imports.closure,
 	}, nil
+}
+
+// manifestDirectoryNames returns the vendor directory names the manifest
+// declares, so that the marker/directory symmetry check accepts imported
+// repositories that trusted CI materialized without a Bazel marker. An
+// entry whose name cannot be parsed is skipped here: the import scan
+// reports it with its full context.
+func manifestDirectoryNames(manifest *generatedRepoManifest) map[string]struct{} {
+	directoryNames := map[string]struct{}{}
+	if manifest == nil {
+		return directoryNames
+	}
+	for _, entry := range manifest.Repos {
+		canonicalRepo, err := parseGeneratedRepoCanonicalName(entry.CanonicalRepo)
+		if err != nil {
+			continue
+		}
+		directoryNames[vendorRepoDirectoryName(canonicalRepo)] = struct{}{}
+	}
+	return directoryNames
 }
 
 // mapsKeys is kept local so that scanner code does not depend on a map's
@@ -263,7 +373,7 @@ func parseVendorCanonicalRepo(value string) (label.CanonicalRepo, error) {
 	return canonicalRepo, nil
 }
 
-func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (map[string]vendorRepoRecord, error) {
+func scanVendoredRepos(vendorPath string, configuration vendorConfiguration, importedDirectoryNames map[string]struct{}) (map[string]vendorRepoRecord, error) {
 	entries, err := os.ReadDir(vendorPath)
 	if err != nil {
 		return nil, fmt.Errorf("read --vendor_dir: %w", err)
@@ -323,6 +433,12 @@ func scanVendoredRepos(vendorPath string, configuration vendorConfiguration) (ma
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		if _, imported := importedDirectoryNames[entry.Name()]; imported {
+			// An imported generated repository is materialized by trusted
+			// CI and validated by its recorded digest, so it need not carry
+			// a Bazel vendor marker.
 			continue
 		}
 		canonicalRepo, err := parseVendorRepoName(entry.Name())
@@ -536,17 +652,9 @@ func NormalizeVendorRegistryURL(registryURL string) (string, error) {
 }
 
 func validateVendoredRegistryLockfile(workspacePath string, registries []VendoredRegistry) error {
-	lockfilePath := filepath.Join(workspacePath, "MODULE.bazel.lock")
-	contents, err := os.ReadFile(lockfilePath)
+	lockfile, err := readVendorLockfile(workspacePath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return errors.New("--vendor_dir with --lockfile_mode=error requires MODULE.bazel.lock")
-		}
-		return fmt.Errorf("read MODULE.bazel.lock: %w", err)
-	}
-	var lockfile vendorLockfile
-	if err := json.Unmarshal(contents, &lockfile); err != nil {
-		return fmt.Errorf("parse MODULE.bazel.lock: %w", err)
+		return err
 	}
 	if len(registries) > 0 && len(lockfile.RegistryFileHashes) == 0 {
 		return errors.New("MODULE.bazel.lock does not contain registryFileHashes required to validate --vendor_dir")

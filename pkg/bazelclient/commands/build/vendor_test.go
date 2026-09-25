@@ -49,6 +49,7 @@ func TestScanVendorDirectoryMapsCanonicalModuleAndExtensionRepos(t *testing.T) {
 		"bazel/vendor",
 		[]string{"https://bcr.bazel.build/"},
 		/* requireLockfile = */ true,
+		/* strictVendorMode = */ false,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "bazel/vendor", vendor.RootRelativePath)
@@ -81,14 +82,14 @@ func TestScanVendorDirectoryMapsBuiltinPlatformsRepository(t *testing.T) {
 	buildHash := sha256.Sum256(buildContents)
 	writeVendoredRepo(t, vendorDirectory, "rules_go+", "FILE:@@platforms//host:BUILD "+hex.EncodeToString(buildHash[:]))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Len(t, vendor.Repos, 2)
 	require.Equal(t, "platforms+", vendor.Repos[0].CanonicalRepo.String())
 	require.Equal(t, platformsDirectory, vendor.Repos[0].RootPath)
 	require.False(t, vendor.Repos[0].Pinned)
 	require.NoError(t, os.WriteFile(filepath.Join(platformsDirectory, "host", "BUILD"), []byte("changed\n"), 0o644))
-	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.ErrorContains(t, err, "FILE input \"@@platforms//host:BUILD\" no longer matches its recorded SHA-256")
 }
 
@@ -102,7 +103,7 @@ func TestScanVendorDirectoryMapsBuiltinBazelToolsExtensionRepo(t *testing.T) {
 		0o644,
 	))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Len(t, vendor.Repos, 1)
 	require.Equal(t, "bazel_tools++winsdk_configure+local_config_winsdk", vendor.Repos[0].CanonicalRepo.String())
@@ -120,7 +121,7 @@ func TestScanVendorDirectoryMapsBuiltinPlatformsExtensionRepo(t *testing.T) {
 		0o644,
 	))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Len(t, vendor.Repos, 1)
 	require.Equal(t, "platforms++host_platform+host_platform", vendor.Repos[0].CanonicalRepo.String())
@@ -135,7 +136,7 @@ func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(vendorDirectory, "platforms"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "@platforms.marker"), []byte("invalid fingerprint\n"), 0o644))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "invalid repository fingerprint")
 	})
 
@@ -145,7 +146,7 @@ func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 		require.NoError(t, os.MkdirAll(vendorDirectory, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "@platforms.marker"), []byte(vendorMarkerFingerprint+"\n"), 0o644))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "does not have matching directory \"platforms\"")
 	})
 
@@ -154,7 +155,7 @@ func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 		vendorDirectory := filepath.Join(workspace, "vendor")
 		require.NoError(t, os.MkdirAll(filepath.Join(vendorDirectory, "platforms"), 0o755))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "does not have matching marker \"@platforms.marker\"")
 	})
 
@@ -164,7 +165,7 @@ func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 		require.NoError(t, os.MkdirAll(vendorDirectory, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "@other.marker"), []byte(vendorMarkerFingerprint+"\n"), 0o644))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "does not contain a valid canonical repository name")
 	})
 
@@ -174,7 +175,7 @@ func TestScanVendorDirectoryValidatesBuiltinPlatformsRepository(t *testing.T) {
 		writeVendoredRepo(t, vendorDirectory, "platforms")
 		writeVendoredRepo(t, vendorDirectory, "platforms+")
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "both map to canonical repository \"@@platforms+\"")
 	})
 }
@@ -185,14 +186,14 @@ func TestScanVendorDirectoryHonorsBuiltinPlatformsPinAndIgnore(t *testing.T) {
 	writeVendoredRepo(t, vendorDirectory, "platforms")
 	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte(`pin("@@platforms")`), 0o644))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Len(t, vendor.Repos, 1)
 	require.Equal(t, "platforms+", vendor.Repos[0].CanonicalRepo.String())
 	require.True(t, vendor.Repos[0].Pinned)
 
 	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte("pin(\"@@platforms\")\nignore(\"@@platforms+\")"), 0o644))
-	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.ErrorContains(t, err, "cannot be both pinned and ignored")
 }
 
@@ -203,7 +204,7 @@ func TestScanVendorDirectoryRejectsMissingMarkerOrDirectory(t *testing.T) {
 		require.NoError(t, os.MkdirAll(vendorDirectory, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "@rules_go+.marker"), []byte(vendorMarkerFingerprint+"\n"), 0o644))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "does not have matching directory")
 	})
 
@@ -212,7 +213,7 @@ func TestScanVendorDirectoryRejectsMissingMarkerOrDirectory(t *testing.T) {
 		vendorDirectory := filepath.Join(workspace, "vendor")
 		require.NoError(t, os.MkdirAll(filepath.Join(vendorDirectory, "rules_go+"), 0o755))
 
-		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+		_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 		require.ErrorContains(t, err, "does not have matching marker")
 	})
 }
@@ -224,7 +225,7 @@ func TestScanVendorDirectoryHonorsIgnoredRepository(t *testing.T) {
 	writeVendoredRepo(t, vendorDirectory, "rules_go+")
 	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte(`ignore("@@rules_go+")`), 0o644))
 
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Empty(t, vendor.Repos)
 }
@@ -235,7 +236,7 @@ func TestScanVendorDirectoryRejectsPinIgnoreConflict(t *testing.T) {
 	require.NoError(t, os.MkdirAll(vendorDirectory, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte("pin(\"@@rules_go+\")\nignore(\"@@rules_go+\")"), 0o644))
 
-	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.ErrorContains(t, err, "cannot be both pinned and ignored")
 }
 
@@ -250,11 +251,11 @@ func TestScanVendorDirectoryRejectsStaleMarkerUnlessPinned(t *testing.T) {
 	writeVendoredRepo(t, vendorDirectory, "rules_go+", "FILE:@@//patches/rules_go.patch "+hex.EncodeToString(expectedHash[:]))
 	require.NoError(t, os.WriteFile(patchPath, []byte("changed"), 0o644))
 
-	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	_, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.ErrorContains(t, err, "no longer matches its recorded SHA-256")
 
 	require.NoError(t, os.WriteFile(filepath.Join(vendorDirectory, "VENDOR.bazel"), []byte(`pin("@@rules_go+")`), 0o644))
-	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false)
+	vendor, err := ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", nil, false, false)
 	require.NoError(t, err)
 	require.Len(t, vendor.Repos, 1)
 	require.True(t, vendor.Repos[0].Pinned)
@@ -273,7 +274,7 @@ func TestScanVendorDirectoryRejectsCorruptRegistryLockHash(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, "MODULE.bazel.lock"), lockfile, 0o644))
 
-	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", []string{"https://bcr.bazel.build/"}, true)
+	_, err = ScanVendorDirectory(path.LocalFormat.NewParser(workspace), "vendor", []string{"https://bcr.bazel.build/"}, true, false)
 	require.ErrorContains(t, err, "does not match the SHA-256 recorded in MODULE.bazel.lock")
 }
 
