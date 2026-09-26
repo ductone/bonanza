@@ -1960,8 +1960,10 @@ func TestFileRoot(t *testing.T) {
 				fileRoot := run(t, model_analysis_pb.DirectoryLayout_INPUT_ROOT, "myrepo")
 				requireEqualPatchedMessage(t, func(*model_core.ReferenceMessagePatcher[model_core.CreatedObjectTree]) *model_analysis_pb.FileRoot_Value {
 					return &model_analysis_pb.FileRoot_Value{
-						RootDirectory: singleChildDirectoryContents("bazel-out",
-							singleChildDirectoryContents("Cg6Kx80o8BPYmGdgWYfRZvbKyWojQ7snQzHOx70XAwRPAAAAAAAAAA.",
+						RootDirectory: singleChildDirectoryContents(
+							"bazel-out",
+							singleChildDirectoryContents(
+								"Cg6Kx80o8BPYmGdgWYfRZvbKyWojQ7snQzHOx70XAwRPAAAAAAAAAA.",
 								singleChildDirectoryContents("bin", &model_filesystem_pb.DirectoryContents{
 									Leaves: &model_filesystem_pb.DirectoryContents_LeavesInline{
 										LeavesInline: &model_filesystem_pb.Leaves{

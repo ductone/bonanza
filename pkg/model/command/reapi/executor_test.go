@@ -29,7 +29,7 @@ type fakeREAPIClient struct {
 	response        *remoteexecution.ExecuteResponse
 }
 
-func (c *fakeREAPIClient) CheckReadiness(context.Context) error {
+func (fakeREAPIClient) CheckReadiness(context.Context) error {
 	return nil
 }
 

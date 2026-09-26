@@ -44,6 +44,7 @@ func testWorkerKeyPair(t *testing.T, environment string) (string, string) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}))
 }
+
 func testWorkerCert(t *testing.T, environment string) string {
 	certificate, _ := testWorkerKeyPair(t, environment)
 	return certificate

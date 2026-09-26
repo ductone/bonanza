@@ -61,9 +61,18 @@ go_library(
 go_test(
     name = "query_test",
     size = "small",
-    srcs = ["parser_test.go"],
+    srcs = [
+        "parser_test.go",
+        "source_exclusions_test.go",
+    ],
+    embed = [":query"],
     deps = [
-        ":query",
+        "//pkg/bazelclient/commands/build",
+        "//pkg/bazelclient/formatted",
+        "//pkg/bazelclient/logging",
+        "//pkg/model/core",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem",
+        "@com_github_buildbarn_bb_storage//pkg/filesystem/path",
         "@com_github_stretchr_testify//require",
     ],
 )

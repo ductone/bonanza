@@ -2358,7 +2358,7 @@ func (vs *noDependenciesUploadedMessageValueState[TReference, TMetadata]) upload
 	return vs, nil
 }
 
-func (vs *noDependenciesUploadedMessageValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
+func (noDependenciesUploadedMessageValueState[TReference, TMetadata]) invalidate() valueState[TReference, TMetadata] {
 	return &computingMessageValueState[TReference, TMetadata]{}
 }
 

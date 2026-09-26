@@ -74,8 +74,8 @@ go_test(
     srcs = [
         "flag_aliases_test.go",
         "materialize_output_root_test.go",
-        "source_exclusions_test.go",
         "output_groups_test.go",
+        "source_exclusions_test.go",
         "target_pattern_file_test.go",
         "vendor_test.go",
         "workspace_status_test.go",

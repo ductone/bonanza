@@ -403,7 +403,7 @@ func executionFailureStatus(err error) error {
 	}
 }
 
-func (e *executor) readAction(
+func (executor) readAction(
 	ctx context.Context,
 	parsedObjectPoolIngester *model_parser.ParsedObjectPoolIngester[object.LocalReference],
 	action *model_executewithstorage.Action[object.GlobalReference],
@@ -1194,7 +1194,7 @@ func (d *outputDirectory) parentFor(components []string) (*outputDirectory, stri
 	return parent, components[len(components)-1], nil
 }
 
-func (d *outputDirectory) Close() error {
+func (outputDirectory) Close() error {
 	return nil
 }
 

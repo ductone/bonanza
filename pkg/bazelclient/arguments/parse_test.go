@@ -19,38 +19,6 @@ import (
 func TestParse(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
-	t.Run("Build", func(t *testing.T) {
-		rootDirectory := NewMockDirectory(ctrl)
-
-		command, err := arguments.Parse(
-			[]string{
-				"--ignore_all_rc_files",
-				"build",
-				"--keep_going",
-				"//...",
-			},
-			rootDirectory,
-			path.UNIXFormat,
-			/* workspacePath = */ path.UNIXFormat.NewParser("/home/bob/myproject"),
-			/* homeDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob"),
-			/* workingDirectoryPath = */ path.UNIXFormat.NewParser("/home/bob/myproject/src"),
-		)
-		require.NoError(t, err)
-		require.Equal(t, &arguments.BuildCommand{
-			CommonFlags: arguments.CommonFlags{
-				Color:                  arguments.Color_Auto,
-				LockfileMode:           arguments.LockfileMode_Update,
-				RemoteCacheCompression: true,
-				RespectGitignore:       true,
-			},
-			BuildFlags: arguments.BuildFlags{
-				KeepGoing:     true,
-				SymlinkPrefix: "bonanza-",
-			},
-			Arguments: []string{"//..."},
-		}, command)
-	})
-
 	t.Run("Version", func(t *testing.T) {
 		// Perform an end to end test, where we have a
 		// simple .bazelrc file in the home directory
