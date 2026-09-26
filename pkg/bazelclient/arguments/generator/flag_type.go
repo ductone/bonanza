@@ -98,9 +98,11 @@ func (boolBuildSettingFlagType) emitDefaultInitializer(string) {}
 func (boolBuildSettingFlagType) emitShortNameParser(string, string, string) {
 	panic("boolean build settings cannot use short names")
 }
+
 func (boolBuildSettingFlagType) emitStartupParser(string) {
 	panic("boolean build settings cannot be startup flags")
 }
+
 func (boolBuildSettingFlagType) emitLongNameParser(flagSetName, longName string) {
 	fmt.Printf("case %#v:\n", "--"+longName)
 	fmt.Printf("  if cmd.get%sFlags() == nil {\n", toSymbolName(flagSetName, true))

@@ -394,7 +394,7 @@ func (c *client) resourceName(prefix string, digest *remoteexecution.Digest) str
 	return strings.Join(parts, "/")
 }
 
-func (c *client) closeUploadWithError(stream bytestream.ByteStream_WriteClient, cancel context.CancelFunc, cause error) error {
+func (client) closeUploadWithError(stream bytestream.ByteStream_WriteClient, cancel context.CancelFunc, cause error) error {
 	cancel()
 	_, _ = stream.CloseAndRecv()
 	return cause
@@ -402,7 +402,7 @@ func (c *client) closeUploadWithError(stream bytestream.ByteStream_WriteClient, 
 
 // REAPI permits a concurrent uploader to complete the same blob mid-stream.
 // A full committed size proves the requested blob is already present.
-func (c *client) closeUploadAfterSendError(
+func (client) closeUploadAfterSendError(
 	stream bytestream.ByteStream_WriteClient,
 	cancel context.CancelFunc,
 	digest *remoteexecution.Digest,

@@ -28,8 +28,8 @@ go_library(
         "@com_github_buildbarn_bb_storage//pkg/clock",
         "@com_github_buildbarn_bb_storage//pkg/global",
         "@com_github_buildbarn_bb_storage//pkg/http/client",
-        "@com_github_buildbarn_bb_storage//pkg/proto/configuration/http/client",
         "@com_github_buildbarn_bb_storage//pkg/program",
+        "@com_github_buildbarn_bb_storage//pkg/proto/configuration/http/client",
         "@com_github_buildbarn_bb_storage//pkg/random",
         "@com_github_buildbarn_bb_storage//pkg/util",
         "@com_github_buildbarn_bb_storage//pkg/x509",
@@ -66,4 +66,16 @@ container_push_official(
     name = "bonanza_fetcher_container_push",
     component = "bonanza-fetcher",
     image = ":bonanza_fetcher_container",
+)
+
+go_test(
+    name = "bonanza_fetcher_test",
+    srcs = ["repository_proxy_test.go"],
+    embed = [":bonanza_fetcher_lib"],
+    deps = [
+        "@com_github_buildbarn_bb_storage//pkg/proto/configuration/http/client",
+        "@com_github_buildbarn_bb_storage//pkg/proto/configuration/tls",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
 )

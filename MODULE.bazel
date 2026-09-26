@@ -73,7 +73,6 @@ go_deps.from_file(go_mod = "//:go.mod")
 use_repo(
     go_deps,
     "cc_mvdan_gofumpt",
-    "com_google_cloud_go_longrunning",
     "com_github_bazelbuild_buildtools",
     "com_github_bazelbuild_remote_apis",
     "com_github_bluekeyes_go_gitdiff",
@@ -84,6 +83,7 @@ use_repo(
     "com_github_prometheus_client_golang",
     "com_github_stretchr_testify",
     "com_github_ulikunitz_xz",
+    "com_google_cloud_go_longrunning",
     "dev_maragu_gomponents",
     "io_filippo_edwards25519",
     "net_starlark_go",

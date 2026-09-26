@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/bazelclient/arguments",
-        "//pkg/bazelclient/commands",
         "//pkg/bazelclient/commands/build",
         "//pkg/bazelclient/formatted",
         "//pkg/bazelclient/logging",

@@ -2610,4 +2610,3 @@ message ConfiguredQueryResult {
     repeated Target targets = 1;
   }
 }
-

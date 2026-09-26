@@ -21,8 +21,8 @@ go_library(
 go_test(
     name = "buffered_test",
     srcs = ["object_manager_test.go"],
-    embed = [":buffered"],
     deps = [
+        ":buffered",
         "//pkg/storage/dag",
         "//pkg/storage/object",
         "@com_github_stretchr_testify//require",

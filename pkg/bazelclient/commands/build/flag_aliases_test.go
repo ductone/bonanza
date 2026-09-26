@@ -39,6 +39,7 @@ flag_alias(name = "incompatible_default_to_explicit_init_py", starlark_flag = "/
 		{Label: "//:other_flag", Value: "custom"},
 	}, overrides)
 }
+
 func TestRootModuleFlagAliasResolvesFromWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, "MODULE.bazel"), []byte(`module(name = "c1")

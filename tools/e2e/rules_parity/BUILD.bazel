@@ -1,15 +1,33 @@
 load(":runfiles.bzl", "leaf", "probe", "template_probe")
 
 leaf(name = "data_leaf")
+
 leaf(name = "src_leaf")
+
 leaf(name = "dep_leaf")
-leaf(name = "proto_leaf", data_only = True)
+
+leaf(
+    name = "proto_leaf",
+    data_only = True,
+)
 
 probe(
     name = "runfiles_collection",
-    data = [":data_leaf", "MODULE.bazel"],
-    srcs = [":src_leaf", "runfiles.bzl"],
-    deps = [":dep_leaf", ":proto_leaf"],
+    srcs = [
+        "runfiles.bzl",
+        ":src_leaf",
+    ],
+    data = [
+        "MODULE.bazel",
+        ":data_leaf",
+    ],
+    deps = [
+        ":dep_leaf",
+        ":proto_leaf",
+    ],
 )
 
-template_probe(name = "python_site_init", template = "site_init.tpl")
+template_probe(
+    name = "python_site_init",
+    template = "site_init.tpl",
+)
