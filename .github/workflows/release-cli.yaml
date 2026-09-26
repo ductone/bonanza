@@ -1,0 +1,366 @@
+name: release-cli
+
+# Build, attest and (only from an existing `cli-*` tag) publish the
+# versioned Bonanza CLI bundles consumed by the C1 client.
+#
+# Design constraints this workflow encodes:
+#   - The bundle is immutable: its identity is the full 40-character
+#     source revision, which fixes the archive name, the extraction root
+#     and every recorded digest. Artifacts are built from a clean
+#     checkout whose HEAD is exactly that revision.
+#   - Publication is never automatic. A build on `main` only produces
+#     attested workflow artifacts. A GitHub release is created only for a
+#     `cli-*` tag that already exists on the built revision and that a
+#     reviewer created, and an existing release is never overwritten.
+#   - Nothing is published from a pull request; this workflow has no
+#     pull_request trigger.
+#   - Bundles are built and structurally verified in `bundle` (cross-arch
+#     archives are verified with --no-exec, because the build runner cannot
+#     execute the other platform's client), then their client start-up is
+#     proven in `runtime` (linux_amd64 natively on the runner; linux_arm64
+#     through qemu user emulation). `publish` requires both. Emulated arm64
+#     execution is deliberately not described as native-hardware evidence:
+#     native arm64 execution on real hardware remains an operator gate.
+#   - Provenance is a GitHub/Sigstore artifact attestation over the
+#     archive, verifiable with
+#     `gh attestation verify --repo ductone/bonanza <archive>`.
+#
+# Publication can also be started manually: run this workflow with a
+# `cli-*` tag ref selected (Actions -> release-cli -> Run workflow, then
+# switch the ref to the tag). The publish job gates on the ref, not on the
+# event, so a tag a reviewer created is publishable even if push-triggered
+# workflow runs are unavailable.
+#
+# Consumers pin:
+#   tag      cli-<first 16 hex of the revision>
+#   archive  bonanza-cli-<full revision>-<platform>.tar.gz
+#   sums     SHA256SUMS (release asset)
+
+on:
+  push:
+    branches: [main]
+    tags: ['cli-*']
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: >-
+          Full 40-character revision the run must build. Must equal the
+          checked-out commit; use it to assert which revision a
+          manually dispatched rebuild covers.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    name: bundle ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux_amd64, linux_arm64]
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the source revision
+        id: source
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          if [ "$revision" != "${{ github.sha }}" ]; then
+            echo "::error::checked out $revision but the run is for ${{ github.sha }}"
+            exit 1
+          fi
+          requested="${{ inputs.revision }}"
+          if [ -n "$requested" ] && [ "$requested" != "$revision" ]; then
+            echo "::error::requested revision $requested does not match checked out $revision"
+            exit 1
+          fi
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tagged="$(git rev-list -n 1 "${{ github.ref_name }}")"
+            if [ "$tagged" != "$revision" ]; then
+              echo "::error::tag ${{ github.ref_name }} points at $tagged, not at the checked out $revision"
+              exit 1
+            fi
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::checkout is not clean; refusing to package unreviewed local changes"
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Install Bazel
+        run: |
+          set -euo pipefail
+          version="$(cat .bazelversion)"
+          url="https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-linux-x86_64"
+          curl -fsSL "$url" -o "$HOME/bazel"
+          # Fail closed: the build toolchain is verified against the
+          # digest published next to the release binary.
+          expected="$(curl -fsSL "${url}.sha256" | awk '{print $1}')"
+          if [ -z "$expected" ]; then
+            echo "::error::no published sha256 for Bazel ${version}"
+            exit 1
+          fi
+          actual="$(sha256sum "$HOME/bazel" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Bazel ${version} digest mismatch: expected ${expected}, got ${actual}"
+            exit 1
+          fi
+          chmod +x "$HOME/bazel"
+          echo "$HOME" >> "$GITHUB_PATH"
+
+      # Build output and staging live outside the checkout: `assemble` refuses
+      # to package a checkout with local changes, and untracked build output
+      # inside the tree would trip that gate on every run.
+      - name: Build the client for ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          mkdir -p "$dist"
+          bazel run --run_under cp \
+            --platforms=@com_github_buildbarn_bb_storage//tools/platforms:${{ matrix.platform }} \
+            //cmd/bonanza_bazel "$dist/bonanza_bazel.${{ matrix.platform }}"
+
+      - name: Assemble the CLI bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          git status --porcelain
+          tag="$(tools/release/bonanza-cli-bundle.sh tag --revision "${{ steps.source.outputs.revision }}")"
+          output="$(tools/release/bonanza-cli-bundle.sh assemble \
+            --binary "$dist/bonanza_bazel.${{ matrix.platform }}" \
+            --platform "${{ matrix.platform }}" \
+            --revision "${{ steps.source.outputs.revision }}" \
+            --source-root "$PWD" \
+            --out "$dist" \
+            --repo-slug "${{ github.repository }}" \
+            --release-tag "$tag")"
+          printf '%s\n' "$output"
+          archive="$(printf '%s\n' "$output" | sed -n 's/^assembled //p')"
+          if [ -z "$archive" ]; then
+            echo "::error::could not determine the assembled archive name"
+            exit 1
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the CLI bundle
+        run: |
+          set -euo pipefail
+          # The build runner cannot execute the other platform's client, so a
+          # cross-architecture archive is verified structurally here. Execution
+          # is proven separately by the `runtime` job.
+          case "$(uname -m)" in
+            x86_64) host=linux_amd64 ;;
+            aarch64 | arm64) host=linux_arm64 ;;
+            *) host=unknown ;;
+          esac
+          exec_flags=()
+          if [ "$host" != "${{ matrix.platform }}" ]; then
+            exec_flags=(--no-exec)
+          fi
+          tools/release/bonanza-cli-bundle.sh verify "${{ steps.bundle.outputs.archive }}" \
+            --expect-revision "${{ steps.source.outputs.revision }}" \
+            --expect-platform "${{ matrix.platform }}" \
+            "${exec_flags[@]}"
+
+      - name: Attest the CLI bundle
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.bundle.outputs.archive }}
+
+      - name: Upload the CLI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: bonanza-cli-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  runtime:
+    name: runtime ${{ matrix.platform }}
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux_amd64, linux_arm64]
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Download the built bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bonanza-cli-${{ matrix.platform }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+
+      # aarch64 binaries are executed through qemu binfmt here. This proves the
+      # arm64 client starts and runs; it is NOT a native-arm64-hardware proof,
+      # and the release notes say so. Native arm64 execution on real hardware
+      # remains an operator gate.
+      - name: Set up qemu user emulation
+        if: matrix.platform == 'linux_arm64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Prove the client runs on ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          shopt -s nullglob
+          archives=("$dist"/*.tar.gz)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::expected one archive for ${{ matrix.platform }}, found ${#archives[@]}"
+            exit 1
+          fi
+          archive="${archives[0]}"
+          if [ "${{ matrix.platform }}" = "linux_amd64" ]; then
+            exec_flag=()
+          else
+            exec_flag=(--cross-exec)
+          fi
+          tools/release/bonanza-cli-bundle.sh verify "$archive" \
+            --expect-revision "${{ github.sha }}" \
+            --expect-platform "${{ matrix.platform }}" \
+            "${exec_flag[@]}"
+
+  publish:
+    name: publish
+    needs: [bundle, runtime]
+    # Only a tag a reviewer created can publish a release, and only once every
+    # platform bundle has been built, verified and proven to execute. Branch
+    # builds (main, manual dispatch) stop at attested workflow artifacts.
+    if: startsWith(github.ref, 'refs/tags/cli-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: read
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download the built bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bonanza-cli-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+
+      - name: Verify the tag matches the built revision
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          expected="$(tools/release/bonanza-cli-bundle.sh tag --revision "${{ github.sha }}")"
+          if [ "$tag" != "$expected" ]; then
+            echo "::error::tag $tag does not name revision ${{ github.sha }} (expected $expected)"
+            exit 1
+          fi
+          tagged="$(git rev-list -n 1 "$tag")"
+          if [ "$tagged" != "${{ github.sha }}" ]; then
+            echo "::error::tag $tag points at $tagged, not at ${{ github.sha }}"
+            exit 1
+          fi
+
+      - name: Verify every bundle before publishing
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          shopt -s nullglob
+          archives=("$dist"/*.tar.gz)
+          if [ "${#archives[@]}" -ne 2 ]; then
+            echo "::error::expected two platform bundles, found ${#archives[@]}"
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            # Structure and identity only: execution for each platform is
+            # proven by the `runtime` job this job depends on, and the publish
+            # runner can only execute one architecture anyway.
+            tools/release/bonanza-cli-bundle.sh verify "$archive" \
+              --expect-revision "${{ github.sha }}" --no-exec
+          done
+          for platform in linux_amd64 linux_arm64; do
+            printf '%s\n' "${archives[@]}" | grep -q -- "$platform" || {
+              echo "::error::no bundle for $platform"
+              exit 1
+            }
+          done
+          cat "$dist"/*.sha256 | LC_ALL=C sort -k2 > "$dist/SHA256SUMS"
+
+      - name: Refuse to overwrite an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "::error::release ${{ github.ref_name }} already exists; a published CLI version is immutable"
+            exit 1
+          fi
+
+      - name: Publish the CLI release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          tag="${{ github.ref_name }}"
+          revision="${{ github.sha }}"
+          cat > release-notes.md <<EOF
+          Versioned Bonanza CLI bundles for revision \`${revision}\`.
+
+          Assets:
+          - \`bonanza-cli-${revision}-linux_amd64.tar.gz\`
+          - \`bonanza-cli-${revision}-linux_arm64.tar.gz\`
+          - \`SHA256SUMS\` (digests of both archives)
+
+          Each archive contains \`bin/bonanza_bazel\`, a \`bin/bonanza\`
+          launcher that injects the bundle's builtins flag matrix, and the
+          \`starlark/{bazel_tools,builtins_bzl,builtins_core}\` trees.
+
+          Authenticity: a checksum file from this same release URL only proves
+          integrity, not who produced the archive. Pin the signer workflow,
+          tag and revision:
+
+          \`\`\`sh
+          gh attestation verify bonanza-cli-${revision}-linux_amd64.tar.gz \\
+            --repo ${GITHUB_REPOSITORY} \\
+            --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release-cli.yaml \\
+            --source-ref refs/tags/${tag} \\
+            --source-digest ${revision} \\
+            --deny-self-hosted-runners
+          \`\`\`
+
+          Offline verification (from a Bonanza checkout of the same revision):
+
+          \`\`\`sh
+          sha256sum -c SHA256SUMS
+          tools/release/bonanza-cli-bundle.sh verify bonanza-cli-${revision}-linux_amd64.tar.gz --expect-revision ${revision}
+          tools/release/bonanza-cli-bundle.sh attest bonanza-cli-${revision}-linux_amd64.tar.gz
+          \`\`\`
+          EOF
+          gh release create "$tag" \
+            --verify-tag \
+            --title "Bonanza CLI ${revision}" \
+            --notes-file release-notes.md \
+            "$dist"/*.tar.gz "$dist"/*.sha256 "$dist/SHA256SUMS"

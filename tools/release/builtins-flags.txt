@@ -1,0 +1,7 @@
+--override_module=bazel_tools=@BUNDLE_ROOT@/share/bonanza/starlark/bazel_tools
+--override_module=builtins_bzl=@BUNDLE_ROOT@/share/bonanza/starlark/builtins_bzl
+--override_module=builtins_core=@BUNDLE_ROOT@/share/bonanza/starlark/builtins_core
+--builtins_module=builtins_core
+--builtins_module=builtins_bzl
+--rule_implementation_wrapper_identifier=@@builtins_core+//:wrappers.bzl%invoke_rule
+--subrule_implementation_wrapper_identifier=@@builtins_core+//:wrappers.bzl%invoke_subrule
